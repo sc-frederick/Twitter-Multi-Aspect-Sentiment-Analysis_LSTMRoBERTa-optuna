@@ -24,6 +24,8 @@ wheels/
 # Virtual Environment
 venv/
 ENV/
+sentiment_analysis_env/
+.env
 
 # IDE
 .idea/
