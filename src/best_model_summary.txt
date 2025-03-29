@@ -1,0 +1,15 @@
+Best Model: RoBERTaModel
+Accuracy: 0.8333333134651184
+F1 Score: 0.7575757575757575
+
+Example Predictions:
+- "This product is amazing! I love it so much."
+  Prediction: Negative (Confidence: 0.5489)
+- "Terrible experience, would not recommend."
+  Prediction: Negative (Confidence: 0.5474)
+- "It's okay, not great but not bad either."
+  Prediction: Negative (Confidence: 0.5459)
+- "The customer service was outstanding!"
+  Prediction: Negative (Confidence: 0.5393)
+- "Disappointed with the quality, not worth the price."
+  Prediction: Negative (Confidence: 0.5453)

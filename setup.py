@@ -1,0 +1,40 @@
+from setuptools import setup, find_packages
+
+setup(
+    name="sentiment_analysis",
+    version="0.1.0",
+    description="A comprehensive sentiment analysis system with multiple models",
+    author="Luke Wolf",
+    author_email="lawolf@usf.edu",
+    url="https://github.com/yourusername/sentiment-analysis-project",
+    packages=find_packages(),
+    install_requires=[
+        "tensorflow>=2.8.0",
+        "numpy>=1.20.0",
+        "pandas>=1.3.0",
+        "scikit-learn>=1.0.0",
+        "matplotlib>=3.4.0",
+        "scipy>=1.7.0",
+        "nltk>=3.6.0",
+        "tqdm>=4.62.0",
+        "grpcio>=1.24.3,<2.0.0",
+        "seaborn>=0.12.0",
+        "kagglehub>=0.1.5",
+        "python-dotenv>=1.0.0",
+        "contractions>=0.1.72",
+        "html5lib>=1.1",
+        "transformers>=4.30.0",
+        "sentencepiece>=0.1.99"
+    ],
+    classifiers=[
+        "Development Status :: 3 - Alpha",
+        "Intended Audience :: Developers",
+        "Intended Audience :: Science/Research",
+        "License :: OSI Approved :: MIT License",
+        "Programming Language :: Python :: 3",
+        "Programming Language :: Python :: 3.8",
+        "Programming Language :: Python :: 3.9",
+        "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    ],
+    python_requires=">=3.8",
+) 

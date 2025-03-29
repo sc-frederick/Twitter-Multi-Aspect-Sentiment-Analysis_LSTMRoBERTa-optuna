@@ -46,4 +46,29 @@ kaggle.json
 *.h5
 
 # Environment variables
-.env 
+.env
+
+# Project specific
+src/models/
+src/misc/
+*.h5
+*.pb
+*.json
+!package.json
+*.db
+
+# Visualization files
+*_training_history.png
+*_confusion_matrix.png
+roberta_*.png
+
+# Jupyter Notebooks
+notebooks/
+
+# OS specific
+.DS_Store
+Thumbs.db
+
+# Logs
+logs/
+*.log 

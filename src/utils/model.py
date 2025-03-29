@@ -317,4 +317,104 @@ def plot_confusion_matrix(cm: np.ndarray) -> None:
     plt.title('Confusion Matrix')
     plt.ylabel('True Label')
     plt.xlabel('Predicted Label')
-    plt.show() 
+    plt.show()
+
+class EnhancedSentimentModel(SentimentModel):
+    """Enhanced sentiment model with more sophisticated architecture and regularization."""
+    
+    def _create_model(self) -> tf.keras.Model:
+        """
+        Create an enhanced neural network model for sentiment analysis.
+        
+        Returns:
+            Compiled TensorFlow model
+        """
+        # L2 regularization to prevent overfitting
+        regularizer = tf.keras.regularizers.l2(0.001)
+        
+        model = models.Sequential([
+            # Input layer
+            layers.Dense(512, activation='relu', input_dim=self.input_dim,
+                        kernel_regularizer=regularizer),
+            layers.BatchNormalization(),
+            layers.Dropout(0.4),
+            
+            # Hidden layers with residual connections
+            layers.Dense(256, activation='relu', kernel_regularizer=regularizer),
+            layers.BatchNormalization(),
+            layers.Dropout(0.3),
+            
+            layers.Dense(128, activation='relu', kernel_regularizer=regularizer),
+            layers.BatchNormalization(),
+            layers.Dropout(0.2),
+            
+            # Output layer
+            layers.Dense(self.num_classes, activation='softmax')
+        ])
+        
+        # Compile model with a more sophisticated optimizer
+        optimizer = tf.keras.optimizers.Adam(
+            learning_rate=0.001,
+            beta_1=0.9,
+            beta_2=0.999,
+            epsilon=1e-07,
+            amsgrad=True
+        )
+        
+        model.compile(
+            optimizer=optimizer,
+            loss='sparse_categorical_crossentropy',
+            metrics=['accuracy']
+        )
+        
+        return model
+    
+    def train(self, 
+              X_train: np.ndarray,
+              y_train: np.ndarray,
+              X_val: np.ndarray,
+              y_val: np.ndarray,
+              epochs: int = 15,
+              batch_size: int = 32) -> tf.keras.callbacks.History:
+        """
+        Train the enhanced sentiment analysis model with learning rate scheduling.
+        
+        Args:
+            X_train: Training features
+            y_train: Training labels
+            X_val: Validation features
+            y_val: Validation labels
+            epochs: Number of training epochs
+            batch_size: Batch size for training
+            
+        Returns:
+            Training history
+        """
+        # Learning rate scheduler
+        lr_scheduler = tf.keras.callbacks.ReduceLROnPlateau(
+            monitor='val_loss',
+            factor=0.5,
+            patience=2,
+            min_lr=1e-6,
+            verbose=1
+        )
+        
+        # Early stopping to prevent overfitting
+        early_stopping = tf.keras.callbacks.EarlyStopping(
+            monitor='val_loss',
+            patience=5,
+            restore_best_weights=True,
+            verbose=1
+        )
+        
+        # Train model
+        history = self.model.fit(
+            X_train, y_train,
+            epochs=epochs,
+            batch_size=batch_size,
+            validation_data=(X_val, y_val),
+            callbacks=[early_stopping, lr_scheduler],
+            verbose=1
+        )
+        
+        return history 
