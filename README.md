@@ -29,6 +29,13 @@ A comprehensive sentiment analysis system with five different models: Multi-Laye
 ```
 pip install -r requirements.txt
 ```
+Run the following inside the python shell:
+```
+>>> import nltk
+>>> nltk.download()
+```
+Then an installation window appears. Go to the 'Models' tab and select 'punkt' & 'punkt_tab' from under the 'Identifier' column. Then click Download and it will install the necessary files.
+
 
 ## Usage
 
