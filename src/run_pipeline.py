@@ -191,7 +191,7 @@ def main():
         if args.include_roberta or args.include_all:
             # Reduce sample size for RoBERTa to avoid excessive training time
             roberta_args = [
-                "--sample_size", str(min(args.sample_size, 5000)),  # Cap at 5000 for RoBERTa
+                "--sample_size", str(min(args.sample_size, 10000)),  # Cap at 10000 for RoBERTa
                 "--verbose", str(args.verbose)
             ]
             
