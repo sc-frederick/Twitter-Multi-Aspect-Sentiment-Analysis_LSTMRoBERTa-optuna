@@ -450,4 +450,39 @@ class DataProcessor:
         processed_text = self.text_preprocessor.preprocess_text(text)
         
         # Vectorize
-        return self.vectorizer.transform([processed_text]) 
+        return self.vectorizer.transform([processed_text])
+        
+    def vectorize_texts(self, texts: List[str]) -> np.ndarray:
+        """
+        Vectorize a list of preprocessed texts using TF-IDF.
+        
+        Args:
+            texts: List of preprocessed texts
+            
+        Returns:
+            Vectorized texts ready for model training or prediction
+        """
+        if self.vectorizer is None:
+            # Initialize vectorizer if it doesn't exist
+            self.vectorizer = TfidfVectorizer(
+                max_features=5000,
+                ngram_range=(1, 2),
+                min_df=2,
+                max_df=0.95
+            )
+            return self.vectorizer.fit_transform(texts)
+        else:
+            # Use existing vectorizer
+            return self.vectorizer.transform(texts)
+    
+    def preprocess_text(self, text: str) -> str:
+        """
+        Apply text preprocessing.
+        
+        Args:
+            text: Input text to preprocess
+            
+        Returns:
+            Preprocessed text
+        """
+        return self.text_preprocessor.preprocess_text(text) 

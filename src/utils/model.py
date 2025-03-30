@@ -5,7 +5,7 @@ Model module for sentiment analysis using TensorFlow.
 import tensorflow as tf
 from tensorflow.keras import layers, models
 import numpy as np
-from typing import Tuple, Dict, Any
+from typing import Tuple, Dict, Any, List
 import logging
 from sklearn.metrics import classification_report, confusion_matrix
 import seaborn as sns
@@ -277,47 +277,65 @@ def evaluate_model(model: tf.keras.Model,
 
 def plot_training_history(history: tf.keras.callbacks.History) -> None:
     """
-    Plot training history.
+    Plot training and validation metrics from model training history.
     
     Args:
-        history: Training history from model.fit()
+        history: History object returned by model.fit()
     """
-    plt.figure(figsize=(12, 4))
+    # Create figure with 2 subplots
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(15, 5))
     
-    # Plot accuracy
-    plt.subplot(1, 2, 1)
-    plt.plot(history.history['accuracy'], label='Training Accuracy')
-    plt.plot(history.history['val_accuracy'], label='Validation Accuracy')
-    plt.title('Model Accuracy')
-    plt.xlabel('Epoch')
-    plt.ylabel('Accuracy')
-    plt.legend()
+    # Plot training & validation accuracy
+    ax1.plot(history.history['accuracy'])
+    if 'val_accuracy' in history.history:
+        ax1.plot(history.history['val_accuracy'])
+        ax1.legend(['Train', 'Validation'], loc='upper left')
+    else:
+        ax1.legend(['Train'], loc='upper left')
+    ax1.set_title('Model Accuracy')
+    ax1.set_ylabel('Accuracy')
+    ax1.set_xlabel('Epoch')
     
-    # Plot loss
-    plt.subplot(1, 2, 2)
-    plt.plot(history.history['loss'], label='Training Loss')
-    plt.plot(history.history['val_loss'], label='Validation Loss')
-    plt.title('Model Loss')
-    plt.xlabel('Epoch')
-    plt.ylabel('Loss')
-    plt.legend()
+    # Plot training & validation loss
+    ax2.plot(history.history['loss'])
+    if 'val_loss' in history.history:
+        ax2.plot(history.history['val_loss'])
+        ax2.legend(['Train', 'Validation'], loc='upper left')
+    else:
+        ax2.legend(['Train'], loc='upper left')
+    ax2.set_title('Model Loss')
+    ax2.set_ylabel('Loss')
+    ax2.set_xlabel('Epoch')
     
     plt.tight_layout()
-    plt.show()
+    # plt.show()  # Comment out to prevent displaying/saving
+    plt.close(fig)  # Close the figure to free memory
+    
+    logger.info("Training history plot created (display disabled)")
 
-def plot_confusion_matrix(cm: np.ndarray) -> None:
+
+def plot_confusion_matrix(cm: np.ndarray, classes: List[str] = None) -> None:
     """
     Plot confusion matrix.
     
     Args:
-        cm: Confusion matrix
+        cm: Confusion matrix array
+        classes: List of class names
     """
-    plt.figure(figsize=(8, 6))
-    sns.heatmap(cm, annot=True, fmt='d', cmap='Blues')
-    plt.title('Confusion Matrix')
+    if classes is None:
+        classes = ['Negative', 'Positive']
+    
+    fig = plt.figure(figsize=(8, 6))
+    sns.heatmap(cm, annot=True, fmt="d", cmap=plt.cm.Blues, 
+                xticklabels=classes, yticklabels=classes)
     plt.ylabel('True Label')
     plt.xlabel('Predicted Label')
-    plt.show()
+    plt.title('Confusion Matrix')
+    plt.tight_layout()
+    # plt.show()  # Comment out to prevent displaying/saving
+    plt.close(fig)  # Close the figure to free memory
+    
+    logger.info("Confusion matrix plot created (display disabled)")
 
 class EnhancedSentimentModel(SentimentModel):
     """Enhanced sentiment model with more sophisticated architecture and regularization."""

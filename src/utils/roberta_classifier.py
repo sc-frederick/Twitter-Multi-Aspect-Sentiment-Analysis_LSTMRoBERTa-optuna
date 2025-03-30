@@ -717,9 +717,10 @@ def plot_training_history(history):
     ax2.legend(['Train', 'Validation'], loc='upper left')
     
     plt.tight_layout()
-    plt.show()
+    # plt.show()  # Comment out to prevent displaying/saving
+    plt.close(fig)  # Close the figure to free memory
     
-    logger.info("Training history plot displayed")
+    logger.info("Training history plot created (display disabled)")
 
 
 def plot_confusion_matrix(cm, classes=None, normalize=False):
@@ -741,13 +742,14 @@ def plot_confusion_matrix(cm, classes=None, normalize=False):
     if normalize:
         cm = cm.astype('float') / cm.sum(axis=1)[:, np.newaxis]
     
-    plt.figure(figsize=(8, 6))
+    fig = plt.figure(figsize=(8, 6))
     sns.heatmap(cm, annot=True, fmt="d" if not normalize else ".2f",
                 cmap=plt.cm.Blues, xticklabels=classes, yticklabels=classes)
     plt.ylabel('True Label')
     plt.xlabel('Predicted Label')
     plt.title('Confusion Matrix')
     plt.tight_layout()
-    plt.show()
+    # plt.show()  # Comment out to prevent displaying/saving
+    plt.close(fig)  # Close the figure to free memory
     
-    logger.info("Confusion matrix plot displayed") 
+    logger.info("Confusion matrix plot created (display disabled)") 

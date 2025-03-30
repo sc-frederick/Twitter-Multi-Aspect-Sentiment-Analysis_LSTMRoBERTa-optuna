@@ -101,6 +101,12 @@ def main():
         )
         
         parser.add_argument(
+            "--include_all", 
+            action="store_true",
+            help="Include all models in comparison"
+        )
+        
+        parser.add_argument(
             "--sample_size", 
             type=int, 
             default=5000,
@@ -120,32 +126,50 @@ def main():
             help="Skip model training and just generate comparison from existing results"
         )
         
+        parser.add_argument(
+            "--verbose", 
+            type=int, 
+            default=1,
+            choices=[0, 1, 2],
+            help="Verbosity level (0=quiet, 1=normal, 2=verbose)"
+        )
+        
         args = parser.parse_args()
+        
+        # Script mapping
+        script_mapping = {
+            "mlp_basic": "mlp_basic_main.py",
+            "mlp_enhanced": "mlp_enhanced_main.py",
+            "roberta": "roberta_main.py",
+            "kernel": "kernel_approximation_main.py",
+            "pca": "randomized_pca_main.py"
+        }
         
         # Check if we should skip training
         if not args.skip_training:
             # List of scripts to run
             scripts = [
-                {"name": "main.py", "args": [f"--sample_size={args.sample_size}"]},      # Basic model
-                {"name": "enhanced_main.py", "args": [f"--sample_size={args.sample_size}"]}  # Enhanced model
+                {"name": script_mapping["mlp_basic"], "args": [f"--sample_size={args.sample_size}"]},
+                {"name": script_mapping["mlp_enhanced"], "args": [f"--sample_size={args.sample_size}"]},
+                {"name": script_mapping["kernel"], "args": [f"--sample_size={args.sample_size}"]},
+                {"name": script_mapping["pca"], "args": [f"--sample_size={args.sample_size}"]}
             ]
             
             # Add RoBERTa if requested
-            if args.include_roberta:
+            if args.include_roberta or args.include_all:
                 # We use a smaller sample size for RoBERTa by default since it's more resource-intensive
                 roberta_sample_size = min(args.sample_size, 5000)
-                # Add timeout parameter for RoBERTa
+                # RoBERTa args without timeout
                 roberta_args = [
-                    f"--sample_size={roberta_sample_size}",
-                    f"--timeout={args.timeout}"
+                    f"--sample_size={roberta_sample_size}"
                 ]
-                scripts.append({"name": "roberta_main.py", "args": roberta_args})
+                scripts.append({"name": script_mapping["roberta"], "args": roberta_args})
             
             # Run all scripts
             for script_info in scripts:
                 script_timeout = args.timeout
                 # RoBERTa needs more time
-                if script_info["name"] == "roberta_main.py":
+                if script_info["name"] == script_mapping["roberta"]:
                     script_timeout = max(script_timeout, 1800)  # At least 30 minutes
                     
                 success = run_script(script_info["name"], script_info["args"], timeout=script_timeout)
