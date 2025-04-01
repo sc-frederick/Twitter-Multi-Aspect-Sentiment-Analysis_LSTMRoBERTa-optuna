@@ -95,7 +95,7 @@ def save_model_results(
     results.append(result)
     
     # Sort results by F1 score (descending)
-    results.sort(key=lambda x: x["metrics"]["f1_score"], reverse=True)
+    results.sort(key=lambda x: float(x["metrics"].get("f1_score", 0)), reverse=True)
     
     # Save results
     with open(RESULTS_FILE, 'w') as f:

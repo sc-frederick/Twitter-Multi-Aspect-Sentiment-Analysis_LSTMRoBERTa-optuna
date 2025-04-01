@@ -140,7 +140,8 @@ def main():
                                     random_state=model_params["random_state"])),
                 ('sgd', SGDClassifier(max_iter=model_params["max_iter"], 
                                     learning_rate=model_params["learning_rate"],
-                                    random_state=model_params["random_state"]))
+                                    random_state=model_params["random_state"],
+                                    loss='modified_huber'))
             ])
             
             # Train model
