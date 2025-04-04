@@ -76,25 +76,19 @@ def main():
         "--mode",
         type=str,
         choices=[
-            "train_mlp_basic", 
-            "train_mlp_enhanced", 
-            "train_roberta", 
-            "train_kernel", 
-            "train_pca",
-            "train_all", 
-            "test", 
-            "compare"
+            "train_mlp_basic", "train_mlp_enhanced", "train_roberta",
+            "train_kernel", "train_pca", "train_lstm", "train_lstm_roberta",
+            "train_all", "test", "compare"
         ],
-        default="compare",
+        required=True,
         help="Pipeline mode to run"
     )
     
     parser.add_argument(
         "--test_model",
         type=str,
-        choices=["mlp_basic", "mlp_enhanced", "roberta", "kernel", "pca"],
-        default="mlp_enhanced",
-        help="Model to test (when mode is 'test')"
+        choices=["mlp_basic", "mlp_enhanced", "roberta", "kernel", "pca", "lstm", "lstm_roberta"],
+        help="Model to test (required for test mode)"
     )
     
     parser.add_argument(
@@ -145,13 +139,15 @@ def main():
         "--verbose", str(args.verbose)
     ]
     
-    # Script mapping
+    # Map of model names to their script files
     script_mapping = {
         "mlp_basic": "mlp_basic_main.py",
         "mlp_enhanced": "mlp_enhanced_main.py",
         "roberta": "roberta_main.py",
         "kernel": "kernel_approximation_main.py",
-        "pca": "randomized_pca_main.py"
+        "pca": "randomized_pca_main.py",
+        "lstm": "lstm_main.py",
+        "lstm_roberta": "lstm_roberta_main.py"
     }
     
     # Run the appropriate pipeline component
@@ -180,6 +176,16 @@ def main():
         if success:
             logging.info("Randomized PCA model training completed")
     
+    elif args.mode == "train_lstm":
+        success = run_script(script_mapping["lstm"], timeout=args.timeout)
+        if success:
+            logging.info("LSTM model training completed")
+    
+    elif args.mode == "train_lstm_roberta":
+        success = run_script(script_mapping["lstm_roberta"], timeout=args.timeout)
+        if success:
+            logging.info("LSTM-RoBERTa model training completed")
+    
     elif args.mode == "train_all":
         # Train models
         successes = {}
@@ -200,17 +206,29 @@ def main():
         success4 = run_script(script_mapping["pca"], timeout=args.timeout)
         successes["pca"] = success4
         
-        # RoBERTa model (optional due to higher resource requirements)
+        # LSTM model (optional due to higher resource requirements)
         if args.include_roberta or args.include_all:
-            # Reduce sample size for RoBERTa to avoid excessive training time
-            roberta_args = [
-                "--sample_size", str(min(args.sample_size, 10000)),  # Cap at 10000 for RoBERTa
+            # Reduce sample size for LSTM to avoid excessive training time
+            lstm_args = [
+                "--sample_size", str(min(args.sample_size, 10000)),  # Cap at 10000 for LSTM
                 "--verbose", str(args.verbose)
             ]
             
-            # Train RoBERTa model 
-            success5 = run_script(script_mapping["roberta"], timeout=args.timeout)
-            successes["roberta"] = success5
+            # Train LSTM model 
+            success5 = run_script(script_mapping["lstm"], timeout=args.timeout)
+            successes["lstm"] = success5
+        
+        # LSTM-RoBERTa model (optional due to higher resource requirements)
+        if args.include_roberta or args.include_all:
+            # Reduce sample size for LSTM-RoBERTa to avoid excessive training time
+            lstm_roberta_args = [
+                "--sample_size", str(min(args.sample_size, 10000)),  # Cap at 10000 for LSTM-RoBERTa
+                "--verbose", str(args.verbose)
+            ]
+            
+            # Train LSTM-RoBERTa model 
+            success6 = run_script(script_mapping["lstm_roberta"], timeout=args.timeout)
+            successes["lstm_roberta"] = success6
         
         # Count successful trainings
         successful_count = sum(1 for success in successes.values() if success)

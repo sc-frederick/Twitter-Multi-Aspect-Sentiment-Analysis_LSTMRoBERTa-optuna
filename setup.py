@@ -10,6 +10,7 @@ setup(
     packages=find_packages(),
     install_requires=[
         "tensorflow>=2.8.0",
+        "tensorflow-addons>=0.21.0",
         "numpy>=1.20.0",
         "pandas>=1.3.0",
         "scikit-learn>=1.0.0",
@@ -24,7 +25,20 @@ setup(
         "contractions>=0.1.72",
         "html5lib>=1.1",
         "transformers>=4.30.0",
-        "sentencepiece>=0.1.99"
+        "sentencepiece>=0.1.99",
+        "torch>=2.0.0",
+        "torchvision>=0.15.0",
+        "torchtext>=0.15.0",
+        "datasets>=2.12.0",
+        "accelerate>=0.20.0",
+        "evaluate>=0.4.0",
+        "pytokenizations>=0.8.4",
+        "safetensors>=0.3.0",
+        "protobuf>=3.20.0",
+        "deepspeed>=0.9.0",
+        "tensorboard>=2.12.0",
+        "spacy>=3.5.0",
+        "wandb>=0.15.0"
     ],
     classifiers=[
         "Development Status :: 3 - Alpha",
