@@ -109,7 +109,7 @@ def main():
         parser.add_argument(
             "--sample_size", 
             type=int, 
-            default=5000,
+            default=20000,  # Increased from 5000 to match run_pipeline.py default
             help="Sample size for models (smaller values are faster but less accurate)"
         )
         
@@ -142,7 +142,9 @@ def main():
             "mlp_enhanced": "mlp_enhanced_main.py",
             "roberta": "roberta_main.py",
             "kernel": "kernel_approximation_main.py",
-            "pca": "randomized_pca_main.py"
+            "pca": "randomized_pca_main.py",
+            "lstm": "lstm_main.py",
+            "lstm_roberta": "lstm_roberta_main.py"
         }
         
         # Check if we should skip training
@@ -157,20 +159,33 @@ def main():
             
             # Add RoBERTa if requested
             if args.include_roberta or args.include_all:
-                # We use a smaller sample size for RoBERTa by default since it's more resource-intensive
-                roberta_sample_size = min(args.sample_size, 5000)
-                # RoBERTa args without timeout
+                # Use a smaller sample size for transformer models if the requested size is very large
+                transformer_sample_size = min(args.sample_size, 20000) if args.sample_size > 20000 else args.sample_size
+                
+                # RoBERTa args
                 roberta_args = [
-                    f"--sample_size={roberta_sample_size}"
+                    f"--sample_size={transformer_sample_size}"
                 ]
                 scripts.append({"name": script_mapping["roberta"], "args": roberta_args})
+                
+                # Add LSTM and LSTM-RoBERTa if include_all is set
+                if args.include_all:
+                    scripts.append({"name": script_mapping["lstm"], "args": [
+                        f"--sample_size={transformer_sample_size}",
+                        "--mode=train"
+                    ]})
+                    
+                    scripts.append({"name": script_mapping["lstm_roberta"], "args": [
+                        f"--sample_size={transformer_sample_size}",
+                        "--mode=train"
+                    ]})
             
             # Run all scripts
             for script_info in scripts:
                 script_timeout = args.timeout
-                # RoBERTa needs more time
-                if script_info["name"] == script_mapping["roberta"]:
-                    script_timeout = max(script_timeout, 1800)  # At least 30 minutes
+                # Transformer models need more time
+                if script_info["name"] in [script_mapping["roberta"], script_mapping["lstm_roberta"]]:
+                    script_timeout = max(script_timeout, 3600)  # At least 60 minutes
                     
                 success = run_script(script_info["name"], script_info["args"], timeout=script_timeout)
                 if not success:
