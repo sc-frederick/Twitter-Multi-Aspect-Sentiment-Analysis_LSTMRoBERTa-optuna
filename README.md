@@ -1,177 +1,106 @@
-# Sentiment Analysis Project
+# LSTM-RoBERTa Sentiment Analysis
 
-A comprehensive sentiment analysis system with seven different models: Multi-Layer Perceptron (MLP) Basic, MLP Enhanced, RoBERTa transformer-based, Kernel Approximation, Randomized PCA, LSTM, and LSTM-RoBERTa models. Includes a results tracking system that compares model performance.
+This repository contains a hybrid Long Short-Term Memory (LSTM) and RoBERTa model for performing sentiment analysis on text data, specifically designed for datasets like Twitter posts. It leverages the contextual embeddings from RoBERTa and the sequence modeling capabilities of LSTM, implemented in PyTorch.
+
+The project includes a data processing pipeline that automatically downloads a dataset from Kaggle, preprocesses the text, and stores it locally in an SQLite database for efficient access. It also features hyperparameter optimization using Optuna to fine-tune the model for optimal performance.
 
 ## Features
 
-- Multiple sentiment analysis models:
-  - Multi-Layer Perceptron (MLP) Basic: Simple neural network with TF-IDF features
-  - Multi-Layer Perceptron (MLP) Enhanced: Improved neural network with advanced preprocessing
-  - RoBERTa: Transformer-based model for state-of-the-art performance
-  - Kernel Approximation: Approximate RBF kernel features with linear classification
-  - Randomized PCA: Dimension reduction with logistic regression classifier
-  - LSTM: Long Short-Term Memory neural network for sequence processing
-  - LSTM-RoBERTa: Combined LSTM with RoBERTa embeddings for enhanced performance
-- Performance tracking and comparison
-- CSV and text output for model results
+- **Hybrid Model:** Combines RoBERTa embeddings with LSTM layers for sentiment classification.
+- **PyTorch Implementation:** Built using PyTorch and the Hugging Face Transformers library.
+- **Automated Data Handling:** Downloads dataset from Kaggle (`zphudzz/tweets-clean-posneg-v1`), preprocesses text, and manages data via SQLite.
+- **Hyperparameter Optimization:** Integrated Optuna for efficient hyperparameter search (learning rate, hidden dimensions, dropout, etc.).
+- **Configuration Driven:** Uses a `config.yaml` file for easy management of paths, model parameters, and optimization settings.
+- **GPU Acceleration:** Automatically utilizes CUDA-enabled GPUs if detected for faster training and inference.
+- **Result Tracking:** Saves model checkpoints, evaluation metrics, and optimization results.
 
-## Getting Started
+## Prerequisites
 
-### Prerequisites
+- **Python:** Python 3.8+ (3.9, 3.10, or 3.11 recommended)
+- **Package Manager:** `pip`
+- **CUDA (for GPU):** NVIDIA GPU drivers and a compatible CUDA Toolkit version installed and configured (including potentially setting the `CUDA_HOME` environment variable).
+- **Kaggle Account & API Credentials:** Needed for automatic dataset download. Configure your credentials (typically `~/.kaggle/kaggle.json`).
+- **Key Python Packages:** See `requirements.txt` (includes `torch`, `transformers`, `optuna`, `nltk`, `pandas`, `scikit-learn`, `pyyaml`, `kagglehub`, etc.)
 
-- Python 3.8+
-- TensorFlow 2.x
-- NumPy, Pandas
-- Scikit-learn
-- PyTorch
-- Transformers (Hugging Face)
-- Matplotlib
+## Installation
 
-### Installation
+1. **Clone the repository:**
 
+```bash
+git clone [https://github.com/your-username/lstm-roberta-sentiment.git](https://github.com/your-username/lstm-roberta-sentiment.git)
+cd lstm-roberta-sentiment
 ```
+
+_(Replace the URL with your actual repository URL)_
+2. **Create a virtual environment (Recommended):**
+
+```bash
+python -m venv venv
+source venv/bin/activate # Linux/macOS
+# venv\Scripts\activate # Windows
+```
+3. **Install dependencies:**
+
+```bash
 pip install -r requirements.txt
 ```
-Run the following inside the python shell:
-```
->>> import nltk
->>> nltk.download()
-```
-Then an installation window appears. Go to the 'Models' tab and select 'punkt' & 'punkt_tab' from under the 'Identifier' column. Then click Download and it will install the necessary files.
+4. **Download NLTK data:** Run Python interpreter:
 
+```python
+import nltk
+nltk.download('punkt')
+nltk.download('stopwords')
+nltk.download('wordnet')
+exit()
+```
+
+## Dataset Setup
+
+The first time you run the script (`src/scripts/lstm_roberta_main.py`), the `DataProcessor` will attempt to:
+
+1. Download the `zphudzz/tweets-clean-posneg-v1` dataset from Kaggle using `kagglehub`. Ensure your Kaggle API token is correctly set up (usually by placing `kaggle.json` in `~/.kaggle/`).
+2. Preprocess the text data (cleaning, tokenizing, etc.).
+3. Save the processed data into an SQLite database specified by `database_path` in `src/config.yaml`.
+
+Subsequent runs will load data directly from the SQLite database, skipping the download and preprocessing steps.
+
+## Configuration (`src/config.yaml`)
+
+Most parameters are controlled via the `src/config.yaml` file. Key sections include:
+
+- **Global Settings:** Project name, paths for results/models, random seed.
+- **Data Settings:** Train/test split sizes.
+- **`lstm_roberta`:**
+    - **Model Defaults:** Architecture parameters (base RoBERTa model, hidden dims, layers, dropout, attention heads), training defaults (learning rate, batch size, etc.), freezing RoBERTa layers.
+    - **Data Loading:** Default sample size to load from the dataset.
+    - **`hpo` (Hyperparameter Optimization):**
+        - `enabled`: Set to `true` to run Optuna when using `--mode optimize`.
+        - `n_trials`: Number of optimization trials.
+        - `hpo_sample_size`: How much data to use during HPO trials (subset of loaded data).
+        - `hpo_epochs`: Epochs per HPO trial.
+        - `search_space`: Defines the ranges/choices for hyperparameters Optuna will tune.
+
+Modify this file to change default behaviors, paths, or the HPO search space.
 
 ## Usage
 
-### Running the Pipeline
+The main script is `src/scripts/lstm_roberta_main.py`. It operates in different modes specified by the `--mode` argument.
 
-The main pipeline can be run with different modes:
+**1\. Hyperparameter Optimization (`--mode optimize`)**
 
+This mode runs Optuna to find the best hyperparameters based on the validation set performance, using the settings defined in `config.yaml` under `lstm_roberta.hpo`. After optimization, it trains a final model using the best found parameters on the full training set and evaluates it on the test set.
+
+```bash
+python src/scripts/lstm_roberta_main.py --mode optimize
+Optional Overrides:# Run fewer trials, use a larger sample during HPO
+python src/scripts/lstm_roberta_main.py --mode optimize --n_trials 15 --sample_size 20000
+(Note: --sample_size here overrides base_sample_size from config, affecting the initial data load. hpo_sample_size from config still determines the subset used during actual HPO trials).2. Training (--mode train)This mode skips Optuna and trains a single model using the default parameters specified in config.yaml (or overridden by Optuna's best results if optimization was run previously and saved state implicitly). It trains on the full training set and evaluates on the test set.python src/scripts/lstm_roberta_main.py --mode train
+Optional Overrides:# Train for more epochs using a specific sample size
+python src/scripts/lstm_roberta_main.py --mode train --final_epochs 5 --sample_size 50000
+3. Testing (--mode test)This mode loads the last saved final model (lstm_roberta_model_final.pt from the configured models_dir) and evaluates it on the test set.python src/scripts/lstm_roberta_main.py --mode test
+Optional Override:# Test using a different sample size from the dataset for evaluation
+python src/scripts/lstm_roberta_main.py --mode test --sample_size 10000
+GPU SupportThe script will automatically use an available NVIDIA GPU (CUDA) if detected by PyTorch. Ensure your drivers and CUDA toolkit are correctly installed and configured in your environment. If you encounter CUDA-related errors during compilation steps (often from the transformers library), make sure the CUDA_HOME environment variable is set correctly before running the script.To force CPU usage (for debugging or if GPU setup is problematic):export CUDA_VISIBLE_DEVICES=""
+python src/scripts/lstm_roberta_main.py --mode train
+OutputModels: Trained models are saved in the directory specified by models_dir in config.yaml (default: src/models/), typically as lstm_roberta_model_final.pt.Results:Evaluation metrics and parameters are logged to src/model_results.json and src/model_results.csv via results_tracker.py.Confusion matrix plots are saved to the results_dir (default: src/results/).Optuna Database: If optimization is run, the study results are stored in an SQLite database in the results_dir (e.g., src/results/optuna_lstm_roberta.db).Logs: Console output provides detailed logging of the process. You can redirect this to a file when running on a server: python ... > run.log 2>&1.LicenseMIT LicenseCopyright (c) 2025 [Your Name or Organization]Permission is hereby granted, free of charge, to any person obtaining a copyof this software and associated documentation files (the "Software"), to dealin the Software without restriction, including without limitation the rightsto use, copy, modify, merge, publish, distribute, sublicense, and/or sellcopies of the Software, and to permit persons to whom the Software isfurnished to do so, subject to the following conditions:The above copyright notice and this permission notice shall be included in allcopies or substantial portions of the Software.THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS ORIMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THEAUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM
 ```
-python src/run_pipeline.py --mode [MODE] [OPTIONS]
-```
-
-### Training Models
-
-#### Train All Models
-To train all models at once:
-```
-python src/run_pipeline.py --mode train_all --include_all --sample_size 5000
-```
-
-#### Train Individual Models
-Train specific models using their dedicated modes:
-
-```
-# MLP Basic model
-python src/run_pipeline.py --mode train_mlp_basic --sample_size 5000
-
-# MLP Enhanced model
-python src/run_pipeline.py --mode train_mlp_enhanced --sample_size 5000
-
-# RoBERTa model
-python src/run_pipeline.py --mode train_roberta --sample_size 1000
-
-# Kernel Approximation model
-python src/run_pipeline.py --mode train_kernel --sample_size 5000
-
-# Randomized PCA model
-python src/run_pipeline.py --mode train_pca --sample_size 5000
-
-# LSTM model
-python src/run_pipeline.py --mode train_lstm --sample_size 1000
-
-# LSTM-RoBERTa model
-python src/run_pipeline.py --mode train_lstm_roberta --sample_size 1000
-```
-
-### Testing Models
-
-#### Test All Models
-To test all trained models at once:
-```
-python src/run_pipeline.py --mode test_all --include_all --sample_size 1000
-```
-
-#### Test Individual Models
-Test a specific model using the test mode with the model name:
-
-```
-# Test MLP Basic model
-python src/run_pipeline.py --mode test --test_model mlp_basic --sample_size 1000
-
-# Test MLP Enhanced model
-python src/run_pipeline.py --mode test --test_model mlp_enhanced --sample_size 1000
-
-# Test RoBERTa model
-python src/run_pipeline.py --mode test --test_model roberta --sample_size 1000
-
-# Test Kernel Approximation model
-python src/run_pipeline.py --mode test --test_model kernel --sample_size 1000
-
-# Test Randomized PCA model
-python src/run_pipeline.py --mode test --test_model pca --sample_size 1000
-
-# Test LSTM model
-python src/run_pipeline.py --mode test --test_model lstm --sample_size 1000
-
-# Test LSTM-RoBERTa model
-python src/run_pipeline.py --mode test --test_model lstm_roberta --sample_size 1000
-```
-
-### Comparing Models
-To compare all models without retraining:
-```
-python src/run_pipeline.py --mode compare --include_all --skip_training
-```
-
-### Available Modes
-
-| Mode | Description |
-|------|-------------|
-| `train_mlp_basic` | Train the MLP Basic model |
-| `train_mlp_enhanced` | Train the MLP Enhanced model |
-| `train_roberta` | Train the RoBERTa model |
-| `train_kernel` | Train the Kernel Approximation model |
-| `train_pca` | Train the Randomized PCA model |
-| `train_lstm` | Train the LSTM model |
-| `train_lstm_roberta` | Train the LSTM-RoBERTa model |
-| `train_all` | Train all models and compare them |
-| `test` | Test a specific model |
-| `test_all` | Test all models |
-| `compare` | Compare existing trained models |
-
-### Common Options
-
-| Option | Description | Default |
-|--------|-------------|---------|
-| `--sample_size` | Number of samples to use for training | 20000 |
-| `--verbose` | Verbosity level (0=silent, 1=progress bar, 2=one line per epoch) | 1 |
-| `--test_model` | Model to test when in 'test' mode (mlp_basic, mlp_enhanced, roberta, kernel, pca, lstm, lstm_roberta) | Required |
-| `--include_roberta` | Include RoBERTa in the comparison (for 'compare' mode) | False |
-| `--include_all` | Include all models in the comparison (for 'compare' mode) | False |
-| `--timeout` | Timeout in seconds for each model script | 1800 |
-| `--skip_training` | Skip model training and compare existing results | False |
-
-### Individual Scripts
-
-You can also run the individual scripts directly:
-
-```
-python src/scripts/mlp_basic_main.py --sample_size 10000
-python src/scripts/mlp_enhanced_main.py --sample_size 10000
-python src/scripts/roberta_main.py --sample_size 1000
-python src/scripts/kernel_approximation_main.py --sample_size 10000
-python src/scripts/randomized_pca_main.py --sample_size 10000
-python src/scripts/lstm_main.py --mode train --sample_size 1000
-python src/scripts/lstm_roberta_main.py --mode train --sample_size 1000
-python src/scripts/compare_models.py --include_all --skip_training
-```
-
-## Results
-
-After running the models, results are stored in:
-- `src/model_results.json` (raw data)
-- `src/model_results.csv` (CSV format for easy loading into pandas)
-- `src/best_model_summary.txt` (text summary of the best model)
-
-The models themselves are stored in the `src/models/` directory. 
