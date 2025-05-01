@@ -113,7 +113,8 @@ Optional Override:# Test using a different sample size from the dataset for eval
 python src/scripts/lstm_roberta_main.py --mode test --sample_size 10000
 ```
 **GPU Support**
-The script will automatically use an available NVIDIA GPU (CUDA) if detected by PyTorch. Ensure your drivers and CUDA toolkit are correctly installed and configured in your environment. If you encounter CUDA-related errors during compilation steps (often from the transformers library), make sure the CUDA_HOME environment variable is set correctly before running the script.To force CPU usage (for debugging or if GPU setup is problematic)
+The script will automatically use an available NVIDIA GPU (CUDA) if detected by PyTorch. Ensure your drivers and CUDA toolkit are correctly installed and configured in your environment. If you encounter CUDA-related errors during compilation steps (often from the transformers library), make sure the CUDA_HOME environment variable is set correctly before running the script. 
+To force CPU usage (for debugging or if GPU setup is problematic):
 ```
 :export CUDA_VISIBLE_DEVICES=""
 python src/scripts/lstm_roberta_main.py --mode train
