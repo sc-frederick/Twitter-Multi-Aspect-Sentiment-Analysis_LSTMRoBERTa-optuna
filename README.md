@@ -90,17 +90,40 @@ The main script is `src/scripts/lstm_roberta_main.py`. It operates in different
 
 This mode runs Optuna to find the best hyperparameters based on the validation set performance, using the settings defined in `config.yaml` under `lstm_roberta.hpo`. After optimization, it trains a final model using the best found parameters on the full training set and evaluates it on the test set.
 
-```bash
+```
+bash
 python src/scripts/lstm_roberta_main.py --mode optimize
 Optional Overrides:# Run fewer trials, use a larger sample during HPO
 python src/scripts/lstm_roberta_main.py --mode optimize --n_trials 15 --sample_size 20000
-(Note: --sample_size here overrides base_sample_size from config, affecting the initial data load. hpo_sample_size from config still determines the subset used during actual HPO trials).2. Training (--mode train)This mode skips Optuna and trains a single model using the default parameters specified in config.yaml (or overridden by Optuna's best results if optimization was run previously and saved state implicitly). It trains on the full training set and evaluates on the test set.python src/scripts/lstm_roberta_main.py --mode train
+(Note: --sample_size here overrides base_sample_size from config, affecting the initial data load. hpo_sample_size from config still determines the subset used during actual HPO trials).
+
+```
+**2\. Training (`--mode train`)**
+```
+This mode skips Optuna and trains a single model using the default parameters specified in config.yaml (or overridden by Optuna's best results if optimization was run previously and saved state implicitly). It trains on the full training set and evaluates on the test set.
+```
+```
+python src/scripts/lstm_roberta_main.py --mode train
 Optional Overrides:# Train for more epochs using a specific sample size
 python src/scripts/lstm_roberta_main.py --mode train --final_epochs 5 --sample_size 50000
-3. Testing (--mode test)This mode loads the last saved final model (lstm_roberta_model_final.pt from the configured models_dir) and evaluates it on the test set.python src/scripts/lstm_roberta_main.py --mode test
+```
+
+**3\. Testing (`--mode test`)**
+```
+This mode loads the last saved final model (lstm_roberta_model_final.pt from the configured models_dir) and evaluates it on the test set.python src/scripts/lstm_roberta_main.py --mode test
 Optional Override:# Test using a different sample size from the dataset for evaluation
 python src/scripts/lstm_roberta_main.py --mode test --sample_size 10000
-GPU SupportThe script will automatically use an available NVIDIA GPU (CUDA) if detected by PyTorch. Ensure your drivers and CUDA toolkit are correctly installed and configured in your environment. If you encounter CUDA-related errors during compilation steps (often from the transformers library), make sure the CUDA_HOME environment variable is set correctly before running the script.To force CPU usage (for debugging or if GPU setup is problematic):export CUDA_VISIBLE_DEVICES=""
+```
+**GPU Support**
+```
+The script will automatically use an available NVIDIA GPU (CUDA) if detected by PyTorch. Ensure your drivers and CUDA toolkit are correctly installed and configured in your environment. If you encounter CUDA-related errors during compilation steps (often from the transformers library), make sure the CUDA_HOME environment variable is set correctly before running the script.To force CPU usage (for debugging or if GPU setup is problematic):export CUDA_VISIBLE_DEVICES=""
 python src/scripts/lstm_roberta_main.py --mode train
-OutputModels: Trained models are saved in the directory specified by models_dir in config.yaml (default: src/models/), typically as lstm_roberta_model_final.pt.Results:Evaluation metrics and parameters are logged to src/model_results.json and src/model_results.csv via results_tracker.py.Confusion matrix plots are saved to the results_dir (default: src/results/).Optuna Database: If optimization is run, the study results are stored in an SQLite database in the results_dir (e.g., src/results/optuna_lstm_roberta.db).Logs: Console output provides detailed logging of the process. You can redirect this to a file when running on a server: python ... > run.log 2>&1.LicenseMIT LicenseCopyright (c) 2025 [Your Name or Organization]Permission is hereby granted, free of charge, to any person obtaining a copyof this software and associated documentation files (the "Software"), to dealin the Software without restriction, including without limitation the rightsto use, copy, modify, merge, publish, distribute, sublicense, and/or sellcopies of the Software, and to permit persons to whom the Software isfurnished to do so, subject to the following conditions:The above copyright notice and this permission notice shall be included in allcopies or substantial portions of the Software.THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS ORIMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THEAUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM
+```
+
+**OutputModels:**
+```
+Trained models are saved in the directory specified by models_dir in config.yaml (default: src/models/), typically as lstm_roberta_model_final.pt.Results:Evaluation metrics and parameters are logged to src/model_results.json and src/model_results.csv via results_tracker.py.Confusion matrix plots are saved to the results_dir (default: src/results/).Optuna Database: If optimization is run, the study results are stored in an SQLite database in the results_dir (e.g., src/results/optuna_lstm_roberta.db).Logs: Console output provides detailed logging of the process. You can redirect this to a file when running on a server: python ... > run.log 2>&1.
+```
+```
+LicenseMIT LicenseCopyright (c) 2025 [Your Name or Organization]Permission is hereby granted, free of charge, to any person obtaining a copyof this software and associated documentation files (the "Software"), to dealin the Software without restriction, including without limitation the rightsto use, copy, modify, merge, publish, distribute, sublicense, and/or sellcopies of the Software, and to permit persons to whom the Software isfurnished to do so, subject to the following conditions:The above copyright notice and this permission notice shall be included in allcopies or substantial portions of the Software.THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS ORIMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THEAUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM
 ```
