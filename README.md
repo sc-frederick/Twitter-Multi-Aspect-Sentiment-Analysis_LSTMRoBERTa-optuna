@@ -27,11 +27,11 @@ The project includes a data processing pipeline that automatically downloads a d
 1. **Clone the repository:**
 
 ```bash
-git clone [https://github.com/your-username/lstm-roberta-sentiment.git](https://github.com/your-username/lstm-roberta-sentiment.git)
+git clone [https://github.com/sc-frederick/Twitter-Multi-Aspect-Sentiment-Analysis_LSTMRoBERTa-optuna.git](https://github.com/sc-frederick/Twitter-Multi-Aspect-Sentiment-Analysis_LSTMRoBERTa-optuna.git)
 cd lstm-roberta-sentiment
 ```
 
-_(Replace the URL with your actual repository URL)_
+
 2. **Create a virtual environment (Recommended):**
 
 ```bash
