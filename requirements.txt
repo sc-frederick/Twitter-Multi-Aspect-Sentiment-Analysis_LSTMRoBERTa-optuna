@@ -1,30 +1,32 @@
-tensorflow>=2.8.0
-tensorflow-addons>=0.21.0
+# Essential ML/DL
+torch>=2.0.0 # Core PyTorch
+transformers>=4.30.0 # For RoBERTa model/tokenizer
+
+# Data Handling & Processing
 numpy>=1.20.0
 pandas>=1.3.0
-scikit-learn>=1.0.0
+scikit-learn>=1.0.0 # Primarily for train_test_split, metrics
+nltk>=3.6.0 # For text preprocessing in data_processor
+contractions>=0.1.72 # Used in data_processor
+html5lib>=1.1 # Used by data_processor (implicitly by html.unescape)
+
+# Data Loading/Management
+kagglehub>=0.1.5 # If using the automatic download in data_processor
+python-dotenv>=1.0.0 # Used by data_processor
+
+# Hyperparameter Optimization (If using Optuna approach)
+optuna>=3.0.0 # Or the specific version you installed
+
+# Configuration (If using YAML)
+pyyaml>=5.0 # Or the specific version
+
+# Visualization (Optional, if keeping plotting in main script)
 matplotlib>=3.4.0
-scipy>=1.7.0
-nltk>=3.6.0
-tqdm>=4.62.0
-grpcio>=1.24.3,<2.0.0
 seaborn>=0.12.0
-kagglehub>=0.1.5
-python-dotenv>=1.0.0
-contractions>=0.1.72
-html5lib>=1.1
-transformers>=4.30.0
-sentencepiece>=0.1.99
-torch>=2.0.0
-torchvision>=0.15.0
-torchtext>=0.15.0
-datasets>=2.12.0
-accelerate>=0.20.0
-evaluate>=0.4.0
-pytokenizations>=0.8.4
-safetensors>=0.3.0
-protobuf>=3.20.0
-deepspeed>=0.9.0
-tensorboard>=2.12.0
-spacy>=3.5.0
-wandb>=0.15.0 
+
+# Utilities
+tqdm>=4.62.0 # Progress bars often used implicitly by libraries or could be added
+
+# Removed: tensorflow, tensorflow-addons (MLP/RoBERTa TF versions)
+# Removed: scipy (potentially used by sklearn, but less direct)
+# Removed: other specific libraries if only used by removed models

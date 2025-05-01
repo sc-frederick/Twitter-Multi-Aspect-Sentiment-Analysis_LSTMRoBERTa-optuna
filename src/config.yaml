@@ -1,0 +1,65 @@
+# src/config.yaml
+
+# --- Global Settings ---
+project_name: "LSTM-RoBERTa-Sentiment"
+results_dir: "results"  # Directory for plots, logs, etc.
+models_dir: "models"    # Directory for saved models
+database_path: "../downloads/tweets_dataset.db" # Adjusted example path relative to src
+random_state: 42
+
+# database_path: "../downloads/tweets_dataset.db" # Old path
+database_path: "data/tweets_dataset.db"       # New path (inside src/data/)
+                                              # OR just "tweets_dataset.db" for src/
+
+
+# --- Data Settings ---
+# Overall split for final train/test
+test_size: 0.2
+# Split of the initial training data used for HPO validation
+hpo_validation_size: 0.25
+
+# --- LSTM-RoBERTa Settings ---
+lstm_roberta:
+  # Model Architecture Defaults (used if not tuned or for final train)
+  roberta_model: "roberta-base" # Base transformer
+  embedding_dim: 768 # Typically matches RoBERTa hidden size
+  hidden_dim: 256
+  num_layers: 2
+  dropout: 0.3
+  num_attention_heads: 4
+  use_layer_norm: True
+  use_residual: True
+  use_pooler_output: False
+  freeze_roberta: True # Default freeze setting
+
+  # Training Defaults (can be overridden by args or Optuna)
+  learning_rate: 2e-5
+  weight_decay: 0.01
+  batch_size: 16
+  max_length: 128
+  final_epochs: 3 # Epochs for the final training run after HPO
+  use_scheduler: True
+  scheduler_warmup_steps: 100
+  gradient_accumulation_steps: 2
+  max_grad_norm: 1.0
+
+  # Data Loading Settings
+  base_sample_size: 10000 # Default sample size loaded initially
+
+  # Optuna Hyperparameter Optimization (HPO) Settings
+  hpo:
+    enabled: true # Set to false to skip HPO and use defaults/args
+    n_trials: 20 # Number of Optuna trials to run
+    timeout_per_trial: 1800 # Timeout in seconds for a single HPO trial (optional)
+    hpo_sample_size: 5000 # Sample size used *during* HPO (subset of base_sample_size)
+    hpo_epochs: 2 # Epochs *per HPO trial* (usually fewer than final_epochs)
+    # --- Search Space ---
+    # Optuna will suggest values within these ranges/sets
+    search_space:
+      learning_rate: { type: "float", low: 1e-6, high: 5e-5, log: True }
+      hidden_dim: { type: "categorical", choices: [128, 256, 512] }
+      num_layers: { type: "int", low: 1, high: 3 }
+      dropout: { type: "float", low: 0.1, high: 0.5 }
+      num_attention_heads: { type: "categorical", choices: [2, 4, 8] }
+      weight_decay: { type: "float", low: 0.0, high: 0.1 }
+      # freeze_roberta: { type: "categorical", choices: [True, False] } # Optional: tune freezing
