@@ -120,8 +120,12 @@ python src/scripts/lstm_roberta_main.py --mode train
 ```
 **OutputModels:**
 Trained models are saved in the directory specified by models_dir in config.yaml (default: src/models/), typically as lstm_roberta_model_final.pt.
+
+
 **Results:**
 Evaluation metrics and parameters are logged to src/model_results.json and src/model_results.csv via results_tracker.py.Confusion matrix plots are saved to the results_dir (default: src/results/).
+
+
 **Optuna Database:**
 If optimization is run, the study results are stored in an SQLite database in the results_dir (e.g., src/results/optuna_lstm_roberta.db).Logs: Console output provides detailed logging of the process. You can redirect this to a file when running on a server: python ... > run.log 2>&1.
 
