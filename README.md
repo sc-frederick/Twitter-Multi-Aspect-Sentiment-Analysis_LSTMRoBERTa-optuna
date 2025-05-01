@@ -131,8 +131,10 @@ If optimization is run, the study results are stored in an SQLite database in th
 
 
 **Logs:**
- Console output provides detailed logging of the process. You can redirect this to a file when running on a server: python ... > run.log 2>&1.
-
+ Console output provides detailed logging of the process. You can redirect this to a file when running on a server: 
+ ```
+ python ... > run.log 2>&1.
+```
 
 **License** 
 MIT LicenseCopyright (c) 2025 [Your Name or Organization]Permission is hereby granted, free of charge, to any person obtaining a copyof this software and associated documentation files (the "Software"), to dealin the Software without restriction, including without limitation the rightsto use, copy, modify, merge, publish, distribute, sublicense, and/or sellcopies of the Software, and to permit persons to whom the Software isfurnished to do so, subject to the following conditions:The above copyright notice and this permission notice shall be included in allcopies or substantial portions of the Software.
