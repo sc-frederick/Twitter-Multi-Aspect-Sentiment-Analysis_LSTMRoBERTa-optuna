@@ -28,7 +28,7 @@ The project includes a data processing pipeline that automatically downloads a d
 
 ```bash
 git clone [https://github.com/sc-frederick/Twitter-Multi-Aspect-Sentiment-Analysis_LSTMRoBERTa-optuna.git](https://github.com/sc-frederick/Twitter-Multi-Aspect-Sentiment-Analysis_LSTMRoBERTa-optuna.git)
-cd lstm-roberta-sentiment
+cd Twitter-Multi-Aspect-Sentiment-Analysis_LSTMRoBERTa-optuna
 ```
 
 
