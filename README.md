@@ -180,7 +180,7 @@ python src/scripts/han\_roberta\_main.py \--mode finetune \\
 
 **Running All Models Sequentially**
 
-Use the provided wrapper scripts (run\_all\_models.sh for Linux/macOS, run\_all\_models.bat for Windows) located in the project root. Pass any arguments intended for the underlying Python scripts directly to the wrapper script.
+Use the provided wrapper scripts (run\_all\_models.sh for Linux/macOS) located in the project root. Pass any arguments intended for the underlying Python scripts directly to the wrapper script.
 
 \# Example: Train all models for 5 epochs on Linux/macOS  
 chmod \+x run\_all\_models.sh \# Make executable first  
