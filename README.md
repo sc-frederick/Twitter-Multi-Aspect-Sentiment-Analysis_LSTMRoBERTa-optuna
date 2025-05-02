@@ -16,7 +16,7 @@ The project includes a data processing pipeline that automatically downloads a d
 * **Hybrid Models:**  
   * LSTM-RoBERTa: RoBERTa \+ BiLSTM \+ Multi-Head Attention.  
   * HAN-RoBERTa: RoBERTa \+ GRU/LSTM \+ Attention.  
-  * GNN-RoBERTa: RoBERTa \+ GAT-like Attention Layers. - GNN IS BORKED Right now, I have the fix on a remote machine - too tired to transfer it over and fix it in the repo. Will do it tomorrow at some point
+  * GNN-RoBERTa: RoBERTa \+ GAT-like Attention Layers.
   * ATAE-RoBERTa: RoBERTa \+ BiLSTM \+ Attention.  
 * **PyTorch Implementation:** Built using PyTorch and the Hugging Face Transformers library.  
 * **Automated Data Handling:** Downloads dataset from Kaggle (zphudzz/tweets-clean-posneg-v1), preprocesses text, and manages data via SQLite.  

@@ -252,6 +252,7 @@ class GNNRoBERTaClassifier:
         self.device = torch.device(config.get('device', 'cuda' if torch.cuda.is_available() else 'cpu'))
         self.tokenizer = RobertaTokenizer.from_pretrained(config['roberta_model_name'])
         self.max_seq_length = config.get('max_seq_length', 128) # Default max sequence length
+        self.epochs = config.get('epochs', 3) # <<< ADDED: Store epochs from config, default to 3
 
         self.model = GNNRoBERTaModel(
             roberta_model_name=config['roberta_model_name'],
@@ -266,6 +267,7 @@ class GNNRoBERTaClassifier:
         logger.info(f"GNN-RoBERTa Classifier initialized on device: {self.device}")
         logger.info(f"Freeze RoBERTa: {config.get('freeze_roberta', False)}")
         logger.info(f"GNN Layers: {config['gnn_layers']}, Heads: {config['gnn_heads']}, Out Features/Head: {config['gnn_out_features']}")
+        logger.info(f"Training Epochs set to: {self.epochs}") # <<< ADDED: Log epochs
 
         # Store training history
         self.history = {'train_loss': [], 'val_loss': [], 'val_accuracy': [], 'val_precision': [], 'val_recall': [], 'val_f1': []}
@@ -325,7 +327,7 @@ class GNNRoBERTaClassifier:
             dict: Training history containing loss and metrics per epoch.
         """
         batch_size = self.config['batch_size']
-        epochs = self.config['epochs']
+        epochs = self.epochs # <<< CHANGED: Use stored self.epochs
         learning_rate = self.config['learning_rate']
         weight_decay = self.config.get('weight_decay', 0.01)
         warmup_steps = self.config.get('scheduler_warmup_steps', 100)
@@ -345,7 +347,7 @@ class GNNRoBERTaClassifier:
         # Reset history before training
         self.history = {k: [] for k in self.history}
 
-        for epoch_i in range(epochs):
+        for epoch_i in range(epochs): # Use the epochs variable derived from self.epochs
             logger.info(f"\n======== Epoch {epoch_i + 1} / {epochs} ========")
             t0 = time.time()
             total_train_loss = 0

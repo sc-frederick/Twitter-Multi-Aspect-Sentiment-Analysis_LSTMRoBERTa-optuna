@@ -24,7 +24,8 @@ try:
     from utils.data_processor import DataProcessor
     # Import the new GNN-RoBERTa classifier and compatible dataset
     from utils.gnn_roberta_classifier import GNNRoBERTaClassifier
-    from utils.lstm_roberta_classifier import SentimentDataset 
+    # Use the same SentimentDataset as it's compatible with RoBERTa inputs
+    from utils.lstm_roberta_classifier import SentimentDataset
     from utils.results_tracker import save_model_results
 except ImportError as e:
     print(f"Error importing utility modules: {e}")
@@ -54,8 +55,8 @@ def load_config():
             float_keys_model = ['learning_rate', 'dropout', 'weight_decay', 'max_grad_norm']
             int_keys_model = ['gnn_out_features', 'gnn_heads', 'gnn_layers', 'batch_size',
                              'max_length', 'scheduler_warmup_steps',
-                             'gradient_accumulation_steps', 'final_epochs']
-            bool_keys_model = ['freeze_roberta', 'use_layer_norm', 'use_scheduler']
+                             'gradient_accumulation_steps', 'final_epochs'] # Keep final_epochs here
+            bool_keys_model = ['freeze_roberta', 'use_layer_norm', 'use_scheduler'] # use_layer_norm might not be directly used by GNN model but could be in wrapper
 
             for key in float_keys_model:
                 if key in gnn_cfg:
@@ -79,7 +80,7 @@ def load_config():
             # Cast HPO settings
             if 'hpo' in gnn_cfg:
                 hpo_cfg = gnn_cfg['hpo']
-                int_keys_hpo = ['n_trials', 'timeout_per_trial', 'hpo_sample_size', 'hpo_epochs']
+                int_keys_hpo = ['n_trials', 'timeout_per_trial', 'hpo_sample_size', 'hpo_epochs'] # hpo_epochs added
                 for key in int_keys_hpo:
                     if key in hpo_cfg:
                         try: hpo_cfg[key] = int(hpo_cfg[key])
@@ -158,63 +159,49 @@ def objective(trial, train_texts, train_labels, val_texts, val_labels, model_con
     # Combine suggested params with fixed params from model_config
     current_params = {**model_config, **params_to_tune}
 
+    # --- Ensure 'epochs' is set for the HPO trial ---
     try:
-        # Ensure key numeric/bool params are correct type before passing to classifier
-        lr = float(current_params.get('learning_rate', model_config.get('learning_rate', 1e-5)))
-        # GNN specific params
-        gnn_out_features = int(current_params.get('gnn_out_features', model_config.get('gnn_out_features', 128)))
-        gnn_heads = int(current_params.get('gnn_heads', model_config.get('gnn_heads', 4)))
-        gnn_layers = int(current_params.get('gnn_layers', model_config.get('gnn_layers', 1)))
-        # Other params
-        dropout = float(current_params.get('dropout', model_config.get('dropout', 0.3)))
-        weight_decay = float(current_params.get('weight_decay', model_config.get('weight_decay', 0.01)))
-        freeze_roberta = bool(current_params.get('freeze_roberta', model_config.get('freeze_roberta', True)))
-        use_layer_norm = bool(current_params.get('use_layer_norm', model_config.get('use_layer_norm', True)))
-        use_scheduler = bool(current_params.get('use_scheduler', model_config.get('use_scheduler', True)))
-        batch_size = int(current_params.get('batch_size', model_config.get('batch_size', 16)))
-        max_length = int(current_params.get('max_length', model_config.get('max_length', 128)))
-        scheduler_warmup_steps = int(current_params.get('scheduler_warmup_steps', model_config.get('scheduler_warmup_steps', 100)))
-        gradient_accumulation_steps = int(current_params.get('gradient_accumulation_steps', model_config.get('gradient_accumulation_steps', 2)))
-        max_grad_norm = float(current_params.get('max_grad_norm', model_config.get('max_grad_norm', 1.0)))
+        hpo_epochs = int(hpo_config['hpo_epochs'])
+        current_params['epochs'] = hpo_epochs # Add/overwrite epochs for this trial
+        logger.info(f"Trial {trial.number}: Setting epochs to {hpo_epochs} from hpo_config")
+    except KeyError:
+        logger.error(f"Trial {trial.number}: 'hpo_epochs' not found in hpo_config. Using default from model_config.")
+        # Fallback to final_epochs if hpo_epochs isn't defined, though it should be
+        current_params['epochs'] = int(model_config.get('final_epochs', 3))
+    except (ValueError, TypeError) as e:
+        logger.error(f"Trial {trial.number}: Error converting hpo_epochs ('{hpo_config.get('hpo_epochs')}') to int: {e}. Using default.")
+        current_params['epochs'] = int(model_config.get('final_epochs', 3))
 
-        # --- Instantiate GNN-RoBERTa Model for Trial ---
-        model = GNNRoBERTaClassifier(
-            roberta_model=str(current_params['roberta_model']),
-            gnn_out_features=gnn_out_features,
-            gnn_heads=gnn_heads,
-            gnn_layers=gnn_layers,
-            dropout=dropout,
-            learning_rate=lr,
-            batch_size=batch_size,
-            max_length=max_length,
-            num_epochs=int(hpo_config['hpo_epochs']), # Use HPO epochs
-            freeze_roberta=freeze_roberta,
-            device=DEVICE,
-            use_layer_norm=use_layer_norm,
-            weight_decay=weight_decay,
-            use_scheduler=use_scheduler,
-            scheduler_warmup_steps=scheduler_warmup_steps,
-            gradient_accumulation_steps=gradient_accumulation_steps,
-            max_grad_norm=max_grad_norm
-        )
+
+    # --- Instantiate GNN-RoBERTa Classifier with the combined config ---
+    try:
+        # Pass the entire dictionary
+        model = GNNRoBERTaClassifier(config=current_params)
 
         # Train and evaluate
+        # The train method now uses self.epochs internally
         history = model.train(train_texts, train_labels, val_texts, val_labels)
-        val_dataset = SentimentDataset(val_texts, val_labels, model.tokenizer, model.max_length)
-        val_loader = DataLoader(val_dataset, batch_size=model.batch_size)
-        val_loss, val_accuracy = model.evaluate(val_loader)
 
-        logger.info(f"Trial {trial.number} - Val Acc: {val_accuracy:.4f}, Val Loss: {val_loss:.4f}")
+        # Evaluate using the classifier's evaluate method
+        # Create a DataLoader for evaluation
+        val_dataset = SentimentDataset(val_texts, val_labels, model.tokenizer, model.max_seq_length)
+        val_loader = DataLoader(val_dataset, batch_size=model.config['batch_size']) # Use batch size from config
+        val_loss, val_accuracy, _, _, val_f1 = model.evaluate(val_texts, val_labels, plot_cm=False) # Use evaluate method
+
+        logger.info(f"Trial {trial.number} - Val Acc: {val_accuracy:.4f}, Val F1: {val_f1:.4f}, Val Loss: {val_loss:.4f}")
 
         # Report intermediate value to Optuna for pruning
-        trial.report(val_accuracy, step=hpo_config['hpo_epochs'])
+        # Use F1-score as the metric to maximize, as it's often better for imbalanced datasets
+        metric_to_optimize = val_f1
+        trial.report(metric_to_optimize, step=current_params['epochs']) # Report based on the actual epochs run
         if trial.should_prune():
             raise optuna.TrialPruned()
 
-        return val_accuracy # Return metric to maximize
+        return metric_to_optimize # Return metric to maximize
 
     except optuna.TrialPruned:
         logger.info(f"Trial {trial.number} pruned.")
+        # Return last reported value or a default bad value (e.g., 0.0 for F1)
         return trial.user_attrs.get("last_reported_value", 0.0)
     except Exception as e:
         logger.error(f"Trial {trial.number} failed: {e}", exc_info=True)
@@ -240,7 +227,12 @@ def main():
     # Apply CLI overrides
     base_sample_size = int(args.sample_size if args.sample_size is not None else model_config.get('base_sample_size', 10000))
     n_trials = int(args.n_trials if args.n_trials is not None else hpo_config.get('n_trials', 20))
-    final_epochs = int(args.final_epochs if args.final_epochs is not None else model_config.get('final_epochs', 3))
+    # Get final_epochs from args or config, ensuring it's an int
+    try:
+        final_epochs = int(args.final_epochs if args.final_epochs is not None else model_config.get('final_epochs', 3))
+    except (ValueError, TypeError):
+        logger.warning(f"Invalid final_epochs value found. Using default: 3")
+        final_epochs = 3
     run_hpo = bool(hpo_config.get('enabled', True)) if args.mode == 'optimize' else False
 
     # Define paths
@@ -301,7 +293,7 @@ def main():
         # --- Use a different DB name for GNN-RoBERTa study ---
         storage_name = f"sqlite:///{os.path.join(results_dir, 'optuna_gnn_roberta.db')}" # <--- Changed DB name
         study = optuna.create_study(
-            study_name=f"gnn-roberta-hpo-{time.strftime('%Y%m%d-%H%M')}", direction="maximize",
+            study_name=f"gnn-roberta-hpo-{time.strftime('%Y%m%d-%H%M')}", direction="maximize", # Maximize F1-score
             storage=storage_name, load_if_exists=True)
         logger.info(f"Using Optuna storage: {storage_name}")
         try:
@@ -310,7 +302,7 @@ def main():
                 n_trials=n_trials, timeout=None, gc_after_trial=True)
             logger.info("Optimization finished.")
             logger.info(f"Number of finished trials: {len(study.trials)}")
-            logger.info(f"Best trial overall (Accuracy): {study.best_value:.4f}")
+            logger.info(f"Best trial overall (F1-Score): {study.best_value:.4f}") # Log F1
             logger.info("Best hyperparameters overall:")
             best_params_from_hpo = study.best_params
             for key, value in best_params_from_hpo.items(): logger.info(f"  {key}: {value}")
@@ -321,7 +313,7 @@ def main():
     # Determine final parameters for 'train' mode
     final_params = {**model_config, **best_params_from_hpo}
 
-    # Ensure final parameters have correct types for 'train' mode
+    # --- Ensure final parameters have correct types and include 'epochs' ---
     if args.mode == 'train' or args.mode == 'optimize':
         # Adapt keys based on GNN-RoBERTa config
         float_keys_final = ['learning_rate', 'dropout', 'weight_decay', 'max_grad_norm']
@@ -336,7 +328,14 @@ def main():
                  if isinstance(val, str):
                      val_lower = val.lower(); final_params[key] = val_lower in ['true', 'yes', 'on', '1']
                  else: final_params[key] = bool(val)
-        except (ValueError, TypeError, KeyError) as e: logger.error(f"Error casting final parameters: {e}", exc_info=True); sys.exit(1)
+            # --- Set epochs for the final training run ---
+            final_params['epochs'] = final_epochs
+            logger.info(f"Setting final training epochs to: {final_epochs}")
+
+        except (ValueError, TypeError, KeyError) as e:
+            logger.error(f"Error casting final parameters: {e}", exc_info=True)
+            sys.exit(1)
+
 
     # --- Train Final Model (Mode: optimize or train) ---
     model_to_evaluate = None
@@ -344,38 +343,24 @@ def main():
     if args.mode == 'optimize' or args.mode == 'train':
         logger.info("Training final GNN-RoBERTa model...")
         # Log relevant params
-        log_params = {k: final_params.get(k) for k in ['learning_rate', 'gnn_out_features', 'gnn_heads', 'gnn_layers', 'dropout', 'weight_decay', 'freeze_roberta']}
+        log_params = {k: final_params.get(k) for k in ['learning_rate', 'gnn_out_features', 'gnn_heads', 'gnn_layers', 'dropout', 'weight_decay', 'freeze_roberta', 'epochs']}
         logger.info(f"Using parameters: {log_params}")
         try:
-            # --- Instantiate Final GNN-RoBERTa Model ---
-            final_model = GNNRoBERTaClassifier(
-                roberta_model=str(final_params['roberta_model']),
-                gnn_out_features=final_params['gnn_out_features'],
-                gnn_heads=final_params['gnn_heads'],
-                gnn_layers=final_params['gnn_layers'],
-                dropout=final_params['dropout'],
-                learning_rate=final_params['learning_rate'],
-                batch_size=final_params['batch_size'],
-                max_length=final_params['max_length'],
-                num_epochs=final_epochs,
-                freeze_roberta=final_params['freeze_roberta'],
-                device=DEVICE,
-                use_layer_norm=final_params.get('use_layer_norm', True),
-                weight_decay=final_params.get('weight_decay', 0.01),
-                use_scheduler=final_params.get('use_scheduler', True),
-                scheduler_warmup_steps=final_params.get('scheduler_warmup_steps', 100),
-                gradient_accumulation_steps=final_params.get('gradient_accumulation_steps', 2),
-                max_grad_norm=final_params.get('max_grad_norm', 1.0)
-            )
+            # --- Instantiate Final GNN-RoBERTa Classifier with final_params ---
+            # final_params now includes the 'epochs' key set to final_epochs
+            final_model_classifier = GNNRoBERTaClassifier(config=final_params)
+
             start_time = time.time()
-            logger.info(f"Starting final training on {len(train_val_texts)} samples for {final_epochs} epochs.")
-            final_model.train(train_val_texts, train_val_labels, None, None) # Train on full train_val set
+            logger.info(f"Starting final training on {len(train_val_texts)} samples for {final_params['epochs']} epochs.")
+            # Train on full train_val set, no validation needed here for the final run
+            final_model_classifier.train(train_val_texts, train_val_labels, None, None)
             final_training_time = time.time() - start_time
             logger.info(f"Final model training time: {final_training_time:.2f}s")
+
             # Save the final GNN-RoBERTa model
-            final_model.save_model(model_save_path)
+            final_model_classifier.save_model(model_save_path)
             logger.info(f"Final GNN-RoBERTa model saved to {model_save_path}")
-            model_to_evaluate = final_model
+            model_to_evaluate = final_model_classifier # Use the wrapper for evaluation
         except Exception as train_err:
              logger.error(f"Failed during final GNN-RoBERTa training: {train_err}", exc_info=True)
              model_to_evaluate = None
@@ -384,12 +369,22 @@ def main():
     elif args.mode == 'test':
         logger.info(f"Loading GNN-RoBERTa model for testing from {model_save_path}...")
         if os.path.exists(model_save_path):
-             # Instantiate a default classifier wrapper first
-             # The load_model method will handle re-instantiating the internal model
-             # based on the saved config.
-             model_to_evaluate = GNNRoBERTaClassifier(device=DEVICE) # Use minimal args
              try:
-                 model_to_evaluate.load_model(model_save_path)
+                 # Instantiate a classifier wrapper first, using base config.
+                 # load_model will then load the saved state dict.
+                 # We need to provide the essential architectural params from config
+                 # for the initial instantiation before loading the state.
+                 test_config = model_config.copy() # Start with base config
+                 test_config['device'] = DEVICE # Ensure device is set
+                 # Add other necessary keys if GNNRoBERTaClassifier expects them at init
+                 # (e.g., batch_size, max_length might be needed for helper methods,
+                 # but the core model structure is defined by GNNRoBERTaModel params)
+                 test_config['batch_size'] = int(model_config.get('batch_size', 16))
+                 test_config['max_seq_length'] = int(model_config.get('max_length', 128))
+                 test_config['num_labels'] = int(model_config.get('num_labels', 2))
+
+                 model_to_evaluate = GNNRoBERTaClassifier(config=test_config)
+                 model_to_evaluate.load_model(model_save_path) # Load the saved weights
                  logger.info(f"GNN-RoBERTa model loaded successfully from {model_save_path}")
              except Exception as e:
                  logger.error(f"Failed to load GNN-RoBERTa model state: {e}", exc_info=True)
@@ -405,49 +400,55 @@ def main():
         else:
             logger.info("Evaluating GNN-RoBERTa model on the test set...")
             try:
-                test_predictions_raw = model_to_evaluate.predict(test_texts)
-                test_pred_labels = [1 if pred.get('label') == 'Positive' else 0 for pred in test_predictions_raw]
-
-                accuracy = accuracy_score(test_labels, test_pred_labels)
-                precision = precision_score(test_labels, test_pred_labels, zero_division=0)
-                recall = recall_score(test_labels, test_pred_labels, zero_division=0)
-                f1 = f1_score(test_labels, test_pred_labels, zero_division=0)
-                metrics = {'accuracy': accuracy, 'precision': precision, 'recall': recall, 'f1_score': f1}
+                # Use the evaluate method of the classifier wrapper
+                test_loss, accuracy, precision, recall, f1 = model_to_evaluate.evaluate(
+                    test_texts,
+                    test_labels,
+                    plot_cm=True, # Enable plotting for the final test
+                    results_dir=results_dir,
+                    model_name='GNNRoBERTa_Final'
+                )
+                metrics = {'accuracy': accuracy, 'precision': precision, 'recall': recall, 'f1_score': f1, 'loss': test_loss}
 
                 logger.info("\nFinal Test Set Evaluation Results (GNN-RoBERTa):")
+                logger.info(f"Loss: {test_loss:.4f}")
                 logger.info(f"Accuracy: {accuracy:.4f}")
                 logger.info(f"Precision: {precision:.4f}")
                 logger.info(f"Recall: {recall:.4f}")
                 logger.info(f"F1 Score: {f1:.4f}")
 
-                try:
-                    cm = sk_confusion_matrix(test_labels, test_pred_labels)
-                    cm_path = os.path.join(results_dir, f'gnn_roberta_{args.mode}_confusion_matrix.png') # Changed name
-                    plot_confusion_matrix(cm, output_path=cm_path)
-                except Exception as e: logger.error(f"Could not generate/save confusion matrix: {e}")
-
                 # Save results
                 params_to_save = {
                     'mode': args.mode,
                     'base_sample_size': base_sample_size,
-                    'final_epochs': final_epochs if args.mode == 'train' else 'N/A',
                     'evaluated_model_path': model_save_path,
                     # Include final params used for training/eval or loaded config for test
-                    **(final_params if args.mode in ['train', 'optimize'] else model_to_evaluate.model.config) # Use model's loaded config if testing
+                    # Use the config stored within the loaded classifier instance if testing
+                    **(model_to_evaluate.config if args.mode == 'test' else final_params)
                 }
+                # Add final epochs if training was done
+                if args.mode in ['train', 'optimize']:
+                     params_to_save['final_epochs_run'] = final_params['epochs']
+
                 params_to_save.pop('hpo', None) # Remove HPO sub-dict if present
                 if final_training_time is not None and args.mode in ['train', 'optimize']:
                      params_to_save['final_training_time_seconds'] = round(final_training_time, 2)
                 if args.mode == 'optimize' and study:
                      params_to_save['hpo_n_trials_run'] = len(study.trials)
-                     params_to_save['hpo_best_val_accuracy'] = study.best_value
+                     params_to_save['hpo_best_val_f1'] = study.best_value # Metric was F1
                      params_to_save['hpo_best_params'] = study.best_params
 
+                # Use the results tracker utility
                 save_model_results(
                     model_name=f"GNNRoBERTa_{args.mode.capitalize()}", # Changed name
-                    metrics=metrics, parameters=params_to_save, example_predictions={}) # Add examples if needed
-                logger.info("Evaluation results saved.")
-            except Exception as eval_err: logger.error(f"Failed during final evaluation: {eval_err}", exc_info=True)
+                    metrics=metrics,
+                    parameters=params_to_save,
+                    example_predictions={} # Add example predictions if desired
+                )
+                logger.info("Evaluation results saved via results_tracker.")
+
+            except Exception as eval_err:
+                logger.error(f"Failed during final evaluation: {eval_err}", exc_info=True)
 
     elif not model_to_evaluate:
          logger.warning("No GNN-RoBERTa model was available or trained/loaded for evaluation.")

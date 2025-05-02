@@ -62,7 +62,7 @@ lstm_roberta:
       # freeze_roberta: { type: "categorical", choices: [True, False] } # Optional: tune freezing
 
 # --- HAN-RoBERTa Settings ---
-han_roberta: 
+han_roberta:
   # Model Architecture Defaults
   roberta_model: "roberta-base"
   hidden_dim: 256 # Dimension for the GRU/LSTM layer after RoBERTa
@@ -103,10 +103,10 @@ han_roberta:
       # use_gru: { type: "categorical", choices: [True, False] } # Optional: tune GRU vs LSTM
       # freeze_roberta: { type: "categorical", choices: [True, False] } # Optional: tune freezing
 
-# --- GNN-RoBERTa Settings --- # 
+# --- GNN-RoBERTa Settings --- #
 gnn_roberta:
   # Model Architecture Defaults
-  roberta_model: "roberta-base"
+  roberta_model_name: "roberta-base" # <<< CHANGED THIS LINE
   gnn_out_features: 128 # Output features per GAT head
   gnn_heads: 4          # Number of GAT heads
   gnn_layers: 1         # Number of GAT layers (SimpleGATLayer)
