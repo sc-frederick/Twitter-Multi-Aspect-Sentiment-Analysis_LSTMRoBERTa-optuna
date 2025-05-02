@@ -35,6 +35,8 @@ echo "Running HAN-RoBERTa Script..."
 echo "Arguments: python src/scripts/han_roberta_main.py $ARGS"
 echo "---------------------------------------------"
 
+
+
 # Execute the HAN script, passing all arguments
 python src/scripts/han_roberta_main.py $ARGS
 
@@ -46,9 +48,25 @@ if [ $? -ne 0 ]; then
   exit 1 # Exit the script with an error code
 fi
 
+echo "---------------------------------------------"
+echo "Running GNN-RoBERTa Script..."
+echo "Arguments: python src/scripts/gnn_roberta_main.py $ARGS"
+echo "---------------------------------------------"
+
+# Execute the GNN script, passing all arguments
+python src/scripts/gnn_roberta_main.py $ARGS
+
+# Check if the second script was successful
+if [ $? -ne 0 ]; then
+  echo "---------------------------------------------"
+  echo "ERROR: GNN-RoBERTa script failed."
+  echo "---------------------------------------------"
+  exit 1 # Exit the script with an error code
+fi
+
 echo ""
 echo "---------------------------------------------"
-echo "HAN-RoBERTa script finished successfully."
+echo "GNN-RoBERTa script finished successfully."
 echo "All scripts completed."
 echo "---------------------------------------------"
 
