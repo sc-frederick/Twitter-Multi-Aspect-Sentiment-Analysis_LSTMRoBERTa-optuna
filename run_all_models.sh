@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# Script to run both LSTM-RoBERTa and HAN-RoBERTa main scripts sequentially.
+# Script to run all 4 roberta augmented models
 # Pass any arguments you want to provide to the underlying scripts directly
 # when calling this script.
 # Example: ./run_all_models.sh --mode train --final_epochs 5 --sample_size 20000
