@@ -64,9 +64,25 @@ if [ $? -ne 0 ]; then
   exit 1 # Exit the script with an error code
 fi
 
+echo "---------------------------------------------"
+echo "Running ATAE-RoBERTa Script..."
+echo "Arguments: python src/scripts/atae_roberta_main.py $ARGS"
+echo "---------------------------------------------"
+
+# Execute the ATAE script, passing all arguments
+python src/scripts/atae_roberta_main.py $ARGS
+
+# Check if the second script was successful
+if [ $? -ne 0 ]; then
+  echo "---------------------------------------------"
+  echo "ERROR: ATAE-RoBERTa script failed."
+  echo "---------------------------------------------"
+  exit 1 # Exit the script with an error code
+fi
+
 echo ""
 echo "---------------------------------------------"
-echo "GNN-RoBERTa script finished successfully."
+echo "ATAE-RoBERTa script finished successfully."
 echo "All scripts completed."
 echo "---------------------------------------------"
 
