@@ -23,7 +23,7 @@ if src_dir not in sys.path:
 try:
     from utils.data_processor import DataProcessor
     # Import the new GNN-RoBERTa classifier and compatible dataset
-    from utils.gnn_roberta_classifier import GNNRoBERTaSentimentClassifier, SentimentDataset
+    from utils.gnn_roberta_classifier import GNNRoBERTaClassifier, SentimentDataset
     from utils.results_tracker import save_model_results
 except ImportError as e:
     print(f"Error importing utility modules: {e}")
@@ -177,7 +177,7 @@ def objective(trial, train_texts, train_labels, val_texts, val_labels, model_con
         max_grad_norm = float(current_params.get('max_grad_norm', model_config.get('max_grad_norm', 1.0)))
 
         # --- Instantiate GNN-RoBERTa Model for Trial ---
-        model = GNNRoBERTaSentimentClassifier(
+        model = GNNRoBERTaClassifier(
             roberta_model=str(current_params['roberta_model']),
             gnn_out_features=gnn_out_features,
             gnn_heads=gnn_heads,
@@ -347,7 +347,7 @@ def main():
         logger.info(f"Using parameters: {log_params}")
         try:
             # --- Instantiate Final GNN-RoBERTa Model ---
-            final_model = GNNRoBERTaSentimentClassifier(
+            final_model = GNNRoBERTaClassifier(
                 roberta_model=str(final_params['roberta_model']),
                 gnn_out_features=final_params['gnn_out_features'],
                 gnn_heads=final_params['gnn_heads'],
@@ -386,7 +386,7 @@ def main():
              # Instantiate a default classifier wrapper first
              # The load_model method will handle re-instantiating the internal model
              # based on the saved config.
-             model_to_evaluate = GNNRoBERTaSentimentClassifier(device=DEVICE) # Use minimal args
+             model_to_evaluate = GNNRoBERTaClassifier(device=DEVICE) # Use minimal args
              try:
                  model_to_evaluate.load_model(model_save_path)
                  logger.info(f"GNN-RoBERTa model loaded successfully from {model_save_path}")
