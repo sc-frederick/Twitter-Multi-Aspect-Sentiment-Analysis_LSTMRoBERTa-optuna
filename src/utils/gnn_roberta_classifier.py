@@ -1,533 +1,651 @@
-# src/utils/gnn_roberta_classifier.py
-"""
-Graph Neural Network (GNN) inspired classifier combined with RoBERTa embeddings
-for sentiment classification. Uses a GAT-like attention mechanism over token sequences.
-"""
-
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torch.utils.data import Dataset, DataLoader
-from transformers import AutoTokenizer, AutoModel, get_linear_schedule_with_warmup
-from typing import List, Tuple, Dict, Any, Optional
+from torch.utils.data import DataLoader, TensorDataset, RandomSampler, SequentialSampler
+from transformers import RobertaModel, RobertaTokenizer, AdamW, get_linear_schedule_with_warmup
+from sklearn.metrics import accuracy_score, precision_recall_fscore_support, confusion_matrix
+import numpy as np
+import time
+import datetime
 import logging
 import os
-import numpy as np
+import json
+import matplotlib.pyplot as plt
+import seaborn as sns
 
-# Re-use the SentimentDataset from the LSTM version as input format is compatible
-try:
-    from .lstm_roberta_classifier import SentimentDataset
-except ImportError:
-    logging.error("Could not import SentimentDataset. Ensure lstm_roberta_classifier.py is accessible.")
-    # Define a basic compatible Dataset if import fails (example structure)
-    class SentimentDataset(Dataset):
-        def __init__(self, texts: List[str], labels: List[int], tokenizer, max_length: int = 128):
-            self.texts = texts
-            self.labels = labels
-            self.tokenizer = tokenizer
-            self.max_length = max_length
-        def __len__(self) -> int: return len(self.texts)
-        def __getitem__(self, idx: int) -> Dict[str, torch.Tensor]:
-            text = str(self.texts[idx]); label = self.labels[idx]
-            encoding = self.tokenizer(text, max_length=self.max_length, padding='max_length', truncation=True, return_tensors='pt')
-            return {'input_ids': encoding['input_ids'].squeeze(), 'attention_mask': encoding['attention_mask'].squeeze(), 'label': torch.tensor(label, dtype=torch.long)}
+# Configure logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
 
-class SimpleGATLayer(nn.Module):
+# --- GATLayer Class ---
+class GATLayer(nn.Module):
     """
-    A simplified Graph Attention Network (GAT)-like layer operating on sequences.
-    Each token attends to all other tokens based on learnable weights.
+    Simplified Graph Attention Layer based on https://arxiv.org/abs/1710.10903
+    Operates on node features (e.g., token embeddings) rather than a predefined graph structure.
+    Assumes full connectivity initially, attention mechanism learns edge weights.
     """
-    def __init__(self, in_features: int, out_features: int, n_heads: int, dropout: float, alpha: float = 0.2):
+    def __init__(self, in_features, out_features, heads, dropout, alpha=0.2, concat=True):
         """
+        Initializes the GATLayer.
+
         Args:
-            in_features: Dimension of input features (e.g., RoBERTa hidden size)
-            out_features: Dimension of output features per head
-            n_heads: Number of attention heads
-            dropout: Dropout rate for attention weights and output
-            alpha: Negative slope for LeakyReLU activation
+            in_features (int): Dimension of input features (e.g., RoBERTa hidden size).
+            out_features (int): Dimension of output features per attention head.
+            heads (int): Number of attention heads.
+            dropout (float): Dropout probability.
+            alpha (float, optional): Negative slope for LeakyReLU. Defaults to 0.2.
+            concat (bool, optional): If True, concatenate outputs of heads, else average. Defaults to True.
         """
-        super().__init__()
-        self.n_heads = n_heads
-        self.out_features = out_features
-        self.in_features = in_features
+        super(GATLayer, self).__init__()
+        self.in_features = in_features      # Input feature dimension (RoBERTa hidden size)
+        self.out_features = out_features    # Output feature dimension per head
+        self.heads = heads                  # Number of attention heads
+        self.concat = concat                # If true, concatenate head outputs; else average
+        self.dropout = dropout              # Dropout rate
 
-        # Linear transformation for each head (applied to all nodes)
-        self.W = nn.Parameter(torch.zeros(size=(in_features, n_heads * out_features)))
-        nn.init.xavier_uniform_(self.W.data, gain=1.414)
+        # Linear transformation applied to input features for each head
+        # Output dim: heads * out_features
+        self.W = nn.Linear(in_features, heads * out_features, bias=False)
 
-        # Attention mechanism parameters for each head
-        self.a = nn.Parameter(torch.zeros(size=(n_heads, 2 * out_features)))
-        nn.init.xavier_uniform_(self.a.data, gain=1.414)
+        # Attention mechanism: a linear layer applied to concatenated features [Wh_i || Wh_j]
+        # Input dim: 2 * out_features (concatenated features from two nodes, per head)
+        # Output dim: 1 (raw attention score)
+        self.a = nn.Linear(2 * out_features, 1, bias=False)
 
-        self.leakyrelu = nn.LeakyReLU(alpha)
-        self.dropout = nn.Dropout(dropout)
+        self.leaky_relu = nn.LeakyReLU(alpha)
+        self.softmax = nn.Softmax(dim=-1) # Softmax over the last dimension (keys/columns)
 
-    def forward(self, h: torch.Tensor, attention_mask: Optional[torch.Tensor] = None) -> torch.Tensor:
+    def forward(self, node_features, attention_mask=None):
         """
+        Performs the forward pass of the GAT layer.
+
         Args:
-            h: Input node features [batch_size, seq_len, in_features]
-            attention_mask: Mask for padding tokens [batch_size, seq_len] (1 for real, 0 for padding)
+            node_features (torch.Tensor): Input node features (batch_size, seq_len, in_features).
+                                          Typically RoBERTa last hidden state.
+            attention_mask (torch.Tensor, optional): Mask from tokenizer (batch_size, seq_len).
+                                                     1 for real tokens, 0 for padding. Defaults to None.
 
         Returns:
-            Output node features after attention [batch_size, seq_len, n_heads * out_features]
+            torch.Tensor: Output node features after attention (batch_size, seq_len, heads * out_features or out_features).
         """
-        batch_size, seq_len, _ = h.size()
+        batch_size, seq_len, _ = node_features.size() # B, N, D_in
 
         # 1. Apply linear transformation W
-        # Wh shape: [batch_size, seq_len, n_heads * out_features]
-        Wh = torch.matmul(h, self.W)
-        # Reshape for multi-head processing: [batch_size, seq_len, n_heads, out_features]
-        Wh = Wh.view(batch_size, seq_len, self.n_heads, self.out_features)
+        # node_features: (B, N, D_in) -> Wh: (B, N, H * F_out)
+        Wh = self.W(node_features)
+        # Reshape for multi-head: (B, N, H, F_out)
+        Wh = Wh.view(batch_size, seq_len, self.heads, self.out_features)
 
-        # 2. Compute attention scores (simplified GAT mechanism)
-        # Prepare input for attention score calculation: [batch_size, seq_len, seq_len, n_heads, 2 * out_features]
-        Wh_repeated_rows = Wh.unsqueeze(2).repeat(1, 1, seq_len, 1, 1)
-        Wh_repeated_cols = Wh.unsqueeze(1).repeat(1, seq_len, 1, 1, 1)
-        # Concatenate pairs: [batch_size, seq_len, seq_len, n_heads, 2 * out_features]
-        a_input = torch.cat([Wh_repeated_rows, Wh_repeated_cols], dim=-1)
+        # 2. Compute attention coefficients e_ij
+        # Prepare for broadcasting attention mechanism `a` across all pairs (i, j)
+        # Wh_i: (B, N, 1, H, F_out) -> expand -> (B, N, N, H, F_out)
+        # Wh_j: (B, 1, N, H, F_out) -> expand -> (B, N, N, H, F_out)
+        Wh_i = Wh.unsqueeze(2).expand(batch_size, seq_len, seq_len, self.heads, self.out_features)
+        Wh_j = Wh.unsqueeze(1).expand(batch_size, seq_len, seq_len, self.heads, self.out_features)
 
-        # Apply attention parameters 'a': [batch_size, seq_len, seq_len, n_heads]
-        # self.a shape: [n_heads, 2 * out_features] -> [1, 1, 1, n_heads, 2 * out_features] for matmul
-        e = self.leakyrelu(torch.matmul(a_input, self.a.unsqueeze(0).unsqueeze(0).unsqueeze(0).transpose(-1, -2)).squeeze(-1))
+        # Concatenate features for attention input: (B, N, N, H, 2 * F_out)
+        concat_features = torch.cat([Wh_i, Wh_j], dim=-1)
 
-        # 3. Apply mask to attention scores
+        # Apply attention mechanism `a`: (B, N, N, H, 1)
+        e = self.a(concat_features)
+        # Squeeze last dim: (B, N, N, H)
+        e = e.squeeze(-1)
+        # Apply leaky ReLU: (B, N, N, H)
+        e = self.leaky_relu(e)
+
+        # Permute to (B, H, N, N) for easier masking and softmax
+        e = e.permute(0, 3, 1, 2) # Now shape is (batch_size, heads, seq_len_query, seq_len_key)
+
+        # 3. Apply mask to attention scores BEFORE softmax
         if attention_mask is not None:
-            # Create a mask for the attention matrix: [batch_size, 1, seq_len]
-            mask = attention_mask.unsqueeze(1)
-            # Apply mask: Set scores for padding tokens to -inf
-            e = e.masked_fill(mask.unsqueeze(-1).unsqueeze(-1) == 0, -float('inf')) # Mask rows
-            e = e.masked_fill(mask.unsqueeze(1).unsqueeze(-1) == 0, -float('inf')) # Mask columns
+            # attention_mask shape: (B, N)
+            # We want to mask attention where the KEY (j dimension, last dim in `e`) is padding.
+            # Reshape mask to (B, 1, 1, N) for broadcasting.
+            # This will match `e`'s shape (B, H, N, N) by expanding dims 1 and 2.
+            mask = attention_mask.unsqueeze(1).unsqueeze(2) # Shape: (B, 1, 1, N)
+            # Masked fill needs a boolean mask. True where mask == 0 (padding)
+            # Set attention scores to -inf for padded keys (columns)
+            e = e.masked_fill(mask == 0, -float('inf'))
 
-        # 4. Normalize attention scores using softmax
-        # attention shape: [batch_size, seq_len, seq_len, n_heads]
-        attention = F.softmax(e, dim=2) # Softmax over columns (j dimension in GAT paper)
-        attention = self.dropout(attention)
+        # 4. Normalize attention coefficients using softmax
+        # Softmax is applied across the last dimension (keys/columns)
+        # attention shape: (B, H, N, N)
+        attention = self.softmax(e)
 
-        # 5. Apply attention to transformed features
-        # Wh shape: [batch_size, seq_len, n_heads, out_features] -> [batch_size, n_heads, seq_len, out_features]
-        Wh_permuted = Wh.permute(0, 3, 1, 2)
-        # attention shape: [batch_size, seq_len, seq_len, n_heads] -> [batch_size, n_heads, seq_len, seq_len]
-        attention_permuted = attention.permute(0, 3, 1, 2)
+        # Apply dropout to attention weights
+        attention = F.dropout(attention, self.dropout, training=self.training)
 
-        # h_prime shape: [batch_size, n_heads, seq_len, out_features]
-        h_prime = torch.matmul(attention_permuted, Wh_permuted)
-        # Permute back: [batch_size, seq_len, n_heads, out_features]
-        h_prime = h_prime.permute(0, 2, 1, 3)
-        # Concatenate heads: [batch_size, seq_len, n_heads * out_features]
-        h_prime = h_prime.contiguous().view(batch_size, seq_len, self.n_heads * self.out_features)
+        # 5. Compute output features (weighted sum)
+        # Wh shape: (B, N, H, F_out) -> permute -> (B, H, N, F_out)
+        Wh_permuted = Wh.permute(0, 2, 1, 3) # Shape: (B, H, N, F_out)
 
-        return h_prime
+        # Weighted sum: attention * Wh
+        # (B, H, N, N) @ (B, H, N, F_out) -> (B, H, N, F_out)
+        h_prime = torch.matmul(attention, Wh_permuted)
+
+        # Permute back to (B, N, H, F_out)
+        h_prime = h_prime.permute(0, 2, 1, 3) # Shape: (B, N, H, F_out)
+
+        # 6. Concatenate or average head outputs
+        if self.concat:
+            # Concatenate along the last dimension
+            # (B, N, H * F_out)
+            out_features = h_prime.reshape(batch_size, seq_len, self.heads * self.out_features)
+        else:
+            # Average along the heads dimension (dim 2)
+            # (B, N, F_out)
+            out_features = h_prime.mean(dim=2)
+
+        return out_features
 
 
-class GNNRoBERTa(nn.Module):
+# --- GNN-RoBERTa Model ---
+class GNNRoBERTaModel(nn.Module):
     """
-    GNN-inspired model using RoBERTa embeddings and a SimpleGATLayer.
+    GNN-RoBERTa model for text classification.
+    Combines RoBERTa embeddings with multiple GAT layers.
     """
-    def __init__(
-        self,
-        roberta_model: str = 'roberta-base',
-        gnn_out_features: int = 128, # Output features per GAT head
-        gnn_heads: int = 4,
-        gnn_layers: int = 1, # Number of GAT layers
-        dropout: float = 0.3,
-        freeze_roberta: bool = True,
-        use_layer_norm: bool = True
-    ):
-        super().__init__()
+    def __init__(self, roberta_model_name='roberta-base', gnn_layers=2, gnn_heads=4, gnn_out_features=128, dropout=0.1, num_labels=2, freeze_roberta=False):
+        """
+        Initializes the GNNRoBERTaModel.
 
-        self.roberta = AutoModel.from_pretrained(roberta_model)
-        roberta_hidden_size = self.roberta.config.hidden_size
+        Args:
+            roberta_model_name (str, optional): Name of the pre-trained RoBERTa model. Defaults to 'roberta-base'.
+            gnn_layers (int, optional): Number of GAT layers. Defaults to 2.
+            gnn_heads (int, optional): Number of attention heads in each GAT layer. Defaults to 4.
+            gnn_out_features (int, optional): Output feature dimension per head in GAT layers. Defaults to 128.
+            dropout (float, optional): Dropout probability. Defaults to 0.1.
+            num_labels (int, optional): Number of output classes. Defaults to 2.
+            freeze_roberta (bool, optional): Whether to freeze RoBERTa layers during training. Defaults to False.
+        """
+        super(GNNRoBERTaModel, self).__init__()
+        self.num_labels = num_labels
+        self.roberta = RobertaModel.from_pretrained(roberta_model_name)
+        self.roberta_hidden_size = self.roberta.config.hidden_size
 
+        # Freeze RoBERTa layers if specified
         if freeze_roberta:
             for param in self.roberta.parameters():
                 param.requires_grad = False
 
-        self.use_layer_norm = use_layer_norm
-        if use_layer_norm:
-            self.roberta_layer_norm = nn.LayerNorm(roberta_hidden_size)
-
         # GAT Layers
         self.gat_layers = nn.ModuleList()
-        current_dim = roberta_hidden_size
+        gat_input_dim = self.roberta_hidden_size
         for i in range(gnn_layers):
+            # If it's the last GAT layer, ensure concat=False if we want averaging,
+            # or adjust the classifier input dimension if concat=True.
+            # Here, we assume concatenation for all but the last, or adjust classifier later.
+            # For simplicity, let's assume concat=True for all layers for now.
+            # The final output dimension will be gnn_heads * gnn_out_features.
+            concat_layer = True # You might want to set this to False for the last layer
             self.gat_layers.append(
-                SimpleGATLayer(
-                    in_features=current_dim,
-                    out_features=gnn_out_features,
-                    n_heads=gnn_heads,
-                    dropout=dropout
-                )
+                GATLayer(gat_input_dim, gnn_out_features, gnn_heads, dropout, concat=concat_layer)
             )
-            current_dim = gnn_out_features * gnn_heads # Update dimension for next layer
-            if use_layer_norm:
-                 # Add LayerNorm after each GAT layer (optional)
-                 self.gat_layers.append(nn.LayerNorm(current_dim))
+            # Input dim for the next layer depends on whether the current layer concatenates
+            if concat_layer:
+                gat_input_dim = gnn_heads * gnn_out_features
+            else:
+                gat_input_dim = gnn_out_features # If averaging
 
+        # The final dimension after all GAT layers
+        self.final_gat_dim = gat_input_dim
 
-        # Final classifier
-        # The input dimension depends on the output of the last GAT layer
-        final_gat_output_dim = gnn_out_features * gnn_heads
-        self.classifier = nn.Sequential(
-            nn.Linear(final_gat_output_dim, final_gat_output_dim // 2),
-            nn.LayerNorm(final_gat_output_dim // 2) if use_layer_norm else nn.Identity(),
-            nn.ReLU(),
-            nn.Dropout(dropout),
-            nn.Linear(final_gat_output_dim // 2, 2) # Binary classification
-        )
+        # Classifier layer
+        self.dropout = nn.Dropout(dropout)
+        # The input dimension to the classifier depends on the output of the last GAT layer
+        self.classifier = nn.Linear(self.final_gat_dim, num_labels)
 
-    def forward(self, input_ids: torch.Tensor, attention_mask: torch.Tensor) -> torch.Tensor:
+    def forward(self, input_ids, attention_mask=None):
         """
-        Forward pass.
+        Performs the forward pass of the GNN-RoBERTa model.
 
         Args:
-            input_ids: Tensor [batch_size, seq_len]
-            attention_mask: Tensor [batch_size, seq_len]
+            input_ids (torch.Tensor): Input token IDs (batch_size, seq_len).
+            attention_mask (torch.Tensor, optional): Attention mask (batch_size, seq_len). Defaults to None.
 
         Returns:
-            Logits tensor [batch_size, num_classes]
+            torch.Tensor: Logits for each class (batch_size, num_labels).
         """
         # Get RoBERTa embeddings
-        roberta_output = self.roberta(
-            input_ids=input_ids,
-            attention_mask=attention_mask,
-            return_dict=True
-        )
-        sequence_output = roberta_output.last_hidden_state # [batch_size, seq_len, roberta_hidden_size]
-
-        if self.use_layer_norm and hasattr(self, 'roberta_layer_norm'):
-            sequence_output = self.roberta_layer_norm(sequence_output)
+        # outputs[0] is the last hidden state: (batch_size, seq_len, hidden_size)
+        outputs = self.roberta(input_ids=input_ids, attention_mask=attention_mask)
+        sequence_output = outputs[0]
 
         # Pass through GAT layers
         gat_output = sequence_output
         for layer in self.gat_layers:
-             if isinstance(layer, SimpleGATLayer):
-                 gat_output = layer(gat_output, attention_mask=attention_mask)
-             elif isinstance(layer, nn.LayerNorm): # Apply LayerNorm if present
-                 gat_output = layer(gat_output)
-             else: # Apply activation like ReLU between layers if desired
-                 gat_output = F.elu(gat_output) # Example using ELU
+            # Pass the attention mask to the GAT layer
+            gat_output = layer(gat_output, attention_mask=attention_mask)
+            gat_output = F.relu(gat_output) # Apply activation after each GAT layer
 
-        # Aggregate node features (e.g., mean pooling over sequence dimension, ignoring padding)
-        # Mask padding tokens before pooling
-        masked_gat_output = gat_output * attention_mask.unsqueeze(-1)
-        # Sum non-padding tokens and divide by the number of non-padding tokens
-        summed_output = masked_gat_output.sum(dim=1)
-        num_non_padding = attention_mask.sum(dim=1, keepdim=True)
-        # Avoid division by zero for sequences with only padding (shouldn't happen with proper input)
-        num_non_padding = torch.clamp(num_non_padding, min=1)
-        pooled_output = summed_output / num_non_padding # [batch_size, final_gat_output_dim]
+        # Use the representation of the [CLS] token (first token) for classification
+        # Assumes the [CLS] token representation aggregates sequence information after GAT layers
+        cls_token_output = gat_output[:, 0, :] # (batch_size, final_gat_dim)
 
-        # Classify the pooled representation
-        logits = self.classifier(pooled_output)
+        # Apply dropout and classify
+        pooled_output = self.dropout(cls_token_output)
+        logits = self.classifier(pooled_output) # (batch_size, num_labels)
 
         return logits
 
 
-class GNNRoBERTaSentimentClassifier:
+# --- Classifier Wrapper ---
+class GNNRoBERTaClassifier:
     """
-    Wrapper class for GNN-RoBERTa sentiment classification.
+    A wrapper class for training, evaluating, and using the GNNRoBERTaModel.
+    Handles tokenization, data loading, training loop, evaluation, and saving/loading.
     """
-    def __init__(
-        self,
-        roberta_model: str = 'roberta-base',
-        gnn_out_features: int = 128, # GAT layer output features per head
-        gnn_heads: int = 4,          # Number of GAT heads
-        gnn_layers: int = 1,         # Number of GAT layers
-        dropout: float = 0.3,
-        learning_rate: float = 2e-5,
-        batch_size: int = 16,
-        max_length: int = 128,
-        num_epochs: int = 3,
-        freeze_roberta: bool = True,
-        device: str = None,
-        use_layer_norm: bool = True,
-        weight_decay: float = 0.01,
-        use_scheduler: bool = True,
-        scheduler_warmup_steps: int = 100,
-        gradient_accumulation_steps: int = 2,
-        max_grad_norm: float = 1.0
-    ):
-        self.roberta_model = roberta_model
-        self.gnn_out_features = gnn_out_features
-        self.gnn_heads = gnn_heads
-        self.gnn_layers = gnn_layers
-        self.dropout = dropout
-        self.learning_rate = learning_rate
-        self.batch_size = batch_size
-        self.max_length = max_length
-        self.num_epochs = num_epochs
-        self.freeze_roberta = freeze_roberta
-        self.device = device or ('cuda' if torch.cuda.is_available() else 'cpu')
-        self.use_layer_norm = use_layer_norm
-        self.weight_decay = weight_decay
-        self.use_scheduler = use_scheduler
-        self.scheduler_warmup_steps = scheduler_warmup_steps
-        self.gradient_accumulation_steps = gradient_accumulation_steps
-        self.max_grad_norm = max_grad_norm
+    def __init__(self, config):
+        """
+        Initializes the GNNRoBERTaClassifier.
 
-        self.tokenizer = AutoTokenizer.from_pretrained(roberta_model)
-        self.model = GNNRoBERTa(
-            roberta_model=roberta_model,
-            gnn_out_features=gnn_out_features,
-            gnn_heads=gnn_heads,
-            gnn_layers=gnn_layers,
-            dropout=dropout,
-            freeze_roberta=freeze_roberta,
-            use_layer_norm=use_layer_norm
+        Args:
+            config (dict): Configuration dictionary containing model and training parameters.
+                           Expected keys: roberta_model_name, gnn_layers, gnn_heads,
+                           gnn_out_features, dropout, num_labels, freeze_roberta,
+                           learning_rate, weight_decay, epochs, batch_size,
+                           scheduler_warmup_steps, device, max_seq_length.
+        """
+        self.config = config
+        self.device = torch.device(config.get('device', 'cuda' if torch.cuda.is_available() else 'cpu'))
+        self.tokenizer = RobertaTokenizer.from_pretrained(config['roberta_model_name'])
+        self.max_seq_length = config.get('max_seq_length', 128) # Default max sequence length
+
+        self.model = GNNRoBERTaModel(
+            roberta_model_name=config['roberta_model_name'],
+            gnn_layers=config['gnn_layers'],
+            gnn_heads=config['gnn_heads'],
+            gnn_out_features=config['gnn_out_features'],
+            dropout=config['dropout'],
+            num_labels=config.get('num_labels', 2),
+            freeze_roberta=config.get('freeze_roberta', False)
         ).to(self.device)
 
-        # Optimizer setup
-        if not freeze_roberta:
-            roberta_params = [p for n, p in self.model.named_parameters() if "roberta" in n and p.requires_grad]
-            other_params = [p for n, p in self.model.named_parameters() if "roberta" not in n and p.requires_grad]
-            self.optimizer = torch.optim.AdamW([
-                {'params': roberta_params, 'lr': learning_rate * 0.1},
-                {'params': other_params, 'lr': learning_rate}
-            ], weight_decay=weight_decay)
+        logger.info(f"GNN-RoBERTa Classifier initialized on device: {self.device}")
+        logger.info(f"Freeze RoBERTa: {config.get('freeze_roberta', False)}")
+        logger.info(f"GNN Layers: {config['gnn_layers']}, Heads: {config['gnn_heads']}, Out Features/Head: {config['gnn_out_features']}")
+
+        # Store training history
+        self.history = {'train_loss': [], 'val_loss': [], 'val_accuracy': [], 'val_precision': [], 'val_recall': [], 'val_f1': []}
+
+
+    def _create_dataloader(self, texts, labels, batch_size, sampler_type='random'):
+        """Creates a DataLoader for the given data."""
+        input_ids = []
+        attention_masks = []
+
+        for text in texts:
+            encoded_dict = self.tokenizer.encode_plus(
+                text,
+                add_special_tokens=True,      # Add '[CLS]' and '[SEP]'
+                max_length=self.max_seq_length, # Pad & truncate all sentences.
+                padding='max_length',         # Pad to max_length
+                truncation=True,              # Truncate to max_length
+                return_attention_mask=True,   # Construct attn. masks.
+                return_tensors='pt',          # Return pytorch tensors.
+            )
+            input_ids.append(encoded_dict['input_ids'])
+            attention_masks.append(encoded_dict['attention_mask'])
+
+        # Convert lists to tensors
+        input_ids = torch.cat(input_ids, dim=0)
+        attention_masks = torch.cat(attention_masks, dim=0)
+        labels = torch.tensor(labels)
+
+        dataset = TensorDataset(input_ids, attention_masks, labels)
+
+        if sampler_type == 'random':
+            sampler = RandomSampler(dataset)
+        elif sampler_type == 'sequential':
+            sampler = SequentialSampler(dataset)
         else:
-            self.optimizer = torch.optim.AdamW(
-                [p for p in self.model.parameters() if p.requires_grad],
-                lr=learning_rate, weight_decay=weight_decay
-            )
+            raise ValueError(f"Invalid sampler_type: {sampler_type}")
 
-        self.scheduler = None # Initialized in train()
-        self.criterion = nn.CrossEntropyLoss()
+        dataloader = DataLoader(dataset, sampler=sampler, batch_size=batch_size)
+        return dataloader
 
-        logging.info(f"GNN-RoBERTa Classifier initialized on device: {self.device}")
-        logging.info(f"Freeze RoBERTa: {self.freeze_roberta}")
-        logging.info(f"GNN Layers: {self.gnn_layers}, Heads: {self.gnn_heads}, Out Features/Head: {self.gnn_out_features}")
+    def _format_time(self, elapsed):
+        """Takes a time in seconds and returns a string hh:mm:ss"""
+        elapsed_rounded = int(round((elapsed)))
+        return str(datetime.timedelta(seconds=elapsed_rounded))
 
+    def train(self, train_texts, train_labels, val_texts, val_labels):
+        """
+        Trains the GNN-RoBERTa model.
 
-    def train(self, train_texts: List[str], train_labels: List[int],
-             val_texts: List[str] = None, val_labels: List[int] = None) -> Dict[str, List[float]]:
-        """Train the model."""
-        train_dataset = SentimentDataset(train_texts, train_labels, self.tokenizer, self.max_length)
-        # Consider using more workers if CPU allows and data loading is a bottleneck
-        train_loader = DataLoader(train_dataset, batch_size=self.batch_size, shuffle=True, num_workers=min(4, os.cpu_count()))
+        Args:
+            train_texts (list): List of training texts.
+            train_labels (list): List of training labels.
+            val_texts (list): List of validation texts.
+            val_labels (list): List of validation labels.
 
-        val_loader = None
-        if val_texts is not None and val_labels is not None:
-            val_dataset = SentimentDataset(val_texts, val_labels, self.tokenizer, self.max_length)
-            val_loader = DataLoader(val_dataset, batch_size=self.batch_size, num_workers=min(4, os.cpu_count()))
+        Returns:
+            dict: Training history containing loss and metrics per epoch.
+        """
+        batch_size = self.config['batch_size']
+        epochs = self.config['epochs']
+        learning_rate = self.config['learning_rate']
+        weight_decay = self.config.get('weight_decay', 0.01)
+        warmup_steps = self.config.get('scheduler_warmup_steps', 100)
 
-        # Initialize scheduler
-        if self.use_scheduler:
-            total_steps = len(train_loader) * self.num_epochs // self.gradient_accumulation_steps
-            self.scheduler = get_linear_schedule_with_warmup(
-                self.optimizer,
-                num_warmup_steps=self.scheduler_warmup_steps,
-                num_training_steps=total_steps
-            )
-            logging.info(f"Scheduler initialized: {total_steps} total steps, {self.scheduler_warmup_steps} warmup.")
+        train_dataloader = self._create_dataloader(train_texts, train_labels, batch_size, sampler_type='random')
+        val_dataloader = self._create_dataloader(val_texts, val_labels, batch_size, sampler_type='sequential')
 
-        history = {'train_loss': [], 'train_acc': [], 'val_loss': [], 'val_acc': []}
-        logger = logging.getLogger(__name__)
+        # Optimizer and Scheduler
+        optimizer = AdamW(self.model.parameters(), lr=learning_rate, weight_decay=weight_decay)
+        total_steps = len(train_dataloader) * epochs
+        scheduler = get_linear_schedule_with_warmup(optimizer, num_warmup_steps=warmup_steps, num_training_steps=total_steps)
+        logger.info(f"Scheduler initialized: {total_steps} total steps, {warmup_steps} warmup.")
 
-        for epoch in range(self.num_epochs):
-            self.model.train()
-            total_loss = 0
-            correct_predictions = 0
-            total_samples = 0
-            self.optimizer.zero_grad()
+        loss_fn = nn.CrossEntropyLoss()
 
-            for batch_idx, batch in enumerate(train_loader):
-                input_ids = batch['input_ids'].to(self.device)
-                attention_mask = batch['attention_mask'].to(self.device)
-                labels = batch['label'].to(self.device)
+        # Reset history before training
+        self.history = {k: [] for k in self.history}
 
-                outputs = self.model(input_ids, attention_mask)
-                loss = self.criterion(outputs, labels)
-                loss = loss / self.gradient_accumulation_steps
+        for epoch_i in range(epochs):
+            logger.info(f"\n======== Epoch {epoch_i + 1} / {epochs} ========")
+            t0 = time.time()
+            total_train_loss = 0
+            self.model.train() # Put model in training mode
+
+            for step, batch in enumerate(train_dataloader):
+                if step % 50 == 0 and not step == 0:
+                    elapsed = self._format_time(time.time() - t0)
+                    logger.info(f'  Batch {step:>5,} of {len(train_dataloader):>5,}. Elapsed: {elapsed}.')
+
+                # Unpack batch, move to device
+                b_input_ids = batch[0].to(self.device)
+                b_input_mask = batch[1].to(self.device)
+                b_labels = batch[2].to(self.device)
+
+                self.model.zero_grad() # Clear previous gradients
+
+                # Forward pass
+                logits = self.model(input_ids=b_input_ids, attention_mask=b_input_mask)
+
+                # Calculate loss
+                loss = loss_fn(logits, b_labels)
+                total_train_loss += loss.item()
+
+                # Backward pass
                 loss.backward()
 
-                total_loss += loss.item() * self.gradient_accumulation_steps
-                _, predicted = torch.max(outputs, 1)
-                correct_predictions += (predicted == labels).sum().item()
-                total_samples += labels.size(0)
+                # Clip gradients to prevent exploding gradients
+                torch.nn.utils.clip_grad_norm_(self.model.parameters(), 1.0)
 
-                if (batch_idx + 1) % self.gradient_accumulation_steps == 0 or (batch_idx + 1) == len(train_loader):
-                    torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.max_grad_norm)
-                    self.optimizer.step()
-                    if self.scheduler is not None:
-                        self.scheduler.step()
-                    self.optimizer.zero_grad()
+                # Update parameters
+                optimizer.step()
+                scheduler.step() # Update learning rate schedule
 
-            avg_train_loss = total_loss / len(train_loader)
-            train_accuracy = correct_predictions / total_samples
-            history['train_loss'].append(avg_train_loss)
-            history['train_acc'].append(train_accuracy)
+            # Calculate average training loss for the epoch
+            avg_train_loss = total_train_loss / len(train_dataloader)
+            training_time = self._format_time(time.time() - t0)
+            logger.info(f"  Average training loss: {avg_train_loss:.4f}")
+            logger.info(f"  Training epoch took: {training_time}")
 
-            log_message = f"Epoch {epoch+1}/{self.num_epochs} - Train Loss: {avg_train_loss:.4f}, Train Acc: {train_accuracy:.4f}"
+            # --- Validation ---
+            logger.info("Running Validation...")
+            t0 = time.time()
+            self.model.eval() # Put model in evaluation mode
 
-            if val_loader:
-                val_loss, val_accuracy = self.evaluate(val_loader)
-                history['val_loss'].append(val_loss)
-                history['val_acc'].append(val_accuracy)
-                log_message += f", Val Loss: {val_loss:.4f}, Val Acc: {val_accuracy:.4f}"
+            total_eval_accuracy = 0
+            total_eval_loss = 0
+            all_preds = []
+            all_labels = []
 
-            logger.info(log_message)
+            for batch in val_dataloader:
+                b_input_ids = batch[0].to(self.device)
+                b_input_mask = batch[1].to(self.device)
+                b_labels = batch[2].to(self.device)
 
-        return history
+                with torch.no_grad(): # No gradient calculation during validation
+                    logits = self.model(input_ids=b_input_ids, attention_mask=b_input_mask)
+                    loss = loss_fn(logits, b_labels)
 
+                total_eval_loss += loss.item()
 
-    def evaluate(self, data_loader: DataLoader) -> Tuple[float, float]:
-        """Evaluate the model."""
+                # Move logits and labels to CPU for sklearn metrics
+                logits = logits.detach().cpu().numpy()
+                label_ids = b_labels.to('cpu').numpy()
+
+                preds = np.argmax(logits, axis=1).flatten()
+                all_preds.extend(preds)
+                all_labels.extend(label_ids)
+
+            # Calculate metrics
+            avg_val_loss = total_eval_loss / len(val_dataloader)
+            accuracy = accuracy_score(all_labels, all_preds)
+            precision, recall, f1, _ = precision_recall_fscore_support(all_labels, all_preds, average='weighted', zero_division=0)
+
+            validation_time = self._format_time(time.time() - t0)
+
+            # Log and store history
+            logger.info(f"  Validation Loss: {avg_val_loss:.4f}")
+            logger.info(f"  Accuracy: {accuracy:.4f}")
+            logger.info(f"  Precision: {precision:.4f}")
+            logger.info(f"  Recall: {recall:.4f}")
+            logger.info(f"  F1-Score: {f1:.4f}")
+            logger.info(f"  Validation took: {validation_time}")
+
+            self.history['train_loss'].append(avg_train_loss)
+            self.history['val_loss'].append(avg_val_loss)
+            self.history['val_accuracy'].append(accuracy)
+            self.history['val_precision'].append(precision)
+            self.history['val_recall'].append(recall)
+            self.history['val_f1'].append(f1)
+
+        logger.info("Training complete!")
+        return self.history
+
+    def evaluate(self, test_texts, test_labels, plot_cm=True, results_dir='src/results', model_name='GNNRoBERTa'):
+        """
+        Evaluates the model on the test set.
+
+        Args:
+            test_texts (list): List of test texts.
+            test_labels (list): List of test labels.
+            plot_cm (bool, optional): Whether to plot the confusion matrix. Defaults to True.
+            results_dir (str, optional): Directory to save the confusion matrix plot. Defaults to 'src/results'.
+            model_name (str, optional): Name prefix for the confusion matrix file. Defaults to 'GNNRoBERTa'.
+
+        Returns:
+            tuple: (loss, accuracy, precision, recall, f1)
+        """
+        batch_size = self.config['batch_size']
+        test_dataloader = self._create_dataloader(test_texts, test_labels, batch_size, sampler_type='sequential')
+        loss_fn = nn.CrossEntropyLoss()
+
+        logger.info("Running Evaluation on Test Set...")
+        t0 = time.time()
+        self.model.eval() # Evaluation mode
+
+        total_eval_loss = 0
+        all_preds = []
+        all_labels = []
+
+        for batch in test_dataloader:
+            b_input_ids = batch[0].to(self.device)
+            b_input_mask = batch[1].to(self.device)
+            b_labels = batch[2].to(self.device)
+
+            with torch.no_grad():
+                logits = self.model(input_ids=b_input_ids, attention_mask=b_input_mask)
+                loss = loss_fn(logits, b_labels)
+
+            total_eval_loss += loss.item()
+            logits = logits.detach().cpu().numpy()
+            label_ids = b_labels.to('cpu').numpy()
+            preds = np.argmax(logits, axis=1).flatten()
+            all_preds.extend(preds)
+            all_labels.extend(label_ids)
+
+        # Calculate metrics
+        avg_test_loss = total_eval_loss / len(test_dataloader)
+        accuracy = accuracy_score(all_labels, all_preds)
+        precision, recall, f1, _ = precision_recall_fscore_support(all_labels, all_preds, average='weighted', zero_division=0)
+        cm = confusion_matrix(all_labels, all_preds)
+
+        evaluation_time = self._format_time(time.time() - t0)
+
+        logger.info(f"  Test Loss: {avg_test_loss:.4f}")
+        logger.info(f"  Accuracy: {accuracy:.4f}")
+        logger.info(f"  Precision: {precision:.4f}")
+        logger.info(f"  Recall: {recall:.4f}")
+        logger.info(f"  F1-Score: {f1:.4f}")
+        logger.info(f"  Evaluation took: {evaluation_time}")
+        logger.info(f"  Confusion Matrix:\n{cm}")
+
+        # Plot Confusion Matrix
+        if plot_cm:
+            os.makedirs(results_dir, exist_ok=True)
+            plt.figure(figsize=(8, 6))
+            sns.heatmap(cm, annot=True, fmt="d", cmap="Blues", xticklabels=range(self.config.get('num_labels', 2)), yticklabels=range(self.config.get('num_labels', 2)))
+            plt.xlabel("Predicted Label")
+            plt.ylabel("True Label")
+            plt.title(f"{model_name} - Confusion Matrix")
+            plot_path = os.path.join(results_dir, f"{model_name.lower()}_test_confusion_matrix.png")
+            try:
+                plt.savefig(plot_path)
+                logger.info(f"Confusion matrix saved to {plot_path}")
+            except Exception as e:
+                logger.error(f"Failed to save confusion matrix plot: {e}")
+            plt.close()
+
+        return avg_test_loss, accuracy, precision, recall, f1
+
+    def predict(self, texts):
+        """Predicts labels for a list of texts."""
         self.model.eval()
-        total_loss = 0
-        correct_predictions = 0
-        total_samples = 0
+        batch_size = self.config['batch_size']
+        # Create dataloader without labels
+        input_ids = []
+        attention_masks = []
+        for text in texts:
+             encoded_dict = self.tokenizer.encode_plus(
+                text, add_special_tokens=True, max_length=self.max_seq_length,
+                padding='max_length', truncation=True, return_attention_mask=True, return_tensors='pt',
+            )
+             input_ids.append(encoded_dict['input_ids'])
+             attention_masks.append(encoded_dict['attention_mask'])
 
-        with torch.no_grad():
-            for batch in data_loader:
-                input_ids = batch['input_ids'].to(self.device)
-                attention_mask = batch['attention_mask'].to(self.device)
-                labels = batch['label'].to(self.device)
+        input_ids = torch.cat(input_ids, dim=0)
+        attention_masks = torch.cat(attention_masks, dim=0)
+        dataset = TensorDataset(input_ids, attention_masks)
+        dataloader = DataLoader(dataset, sampler=SequentialSampler(dataset), batch_size=batch_size)
 
-                outputs = self.model(input_ids, attention_mask)
-                loss = self.criterion(outputs, labels)
-                total_loss += loss.item()
+        all_preds = []
+        logger.info("Starting prediction...")
+        for batch in dataloader:
+            b_input_ids = batch[0].to(self.device)
+            b_input_mask = batch[1].to(self.device)
 
-                _, predicted = torch.max(outputs, 1)
-                correct_predictions += (predicted == labels).sum().item()
-                total_samples += labels.size(0)
+            with torch.no_grad():
+                logits = self.model(input_ids=b_input_ids, attention_mask=b_input_mask)
 
-        avg_loss = total_loss / len(data_loader)
-        accuracy = correct_predictions / total_samples
-        return avg_loss, accuracy
+            logits = logits.detach().cpu().numpy()
+            preds = np.argmax(logits, axis=1).flatten()
+            all_preds.extend(preds)
 
+        logger.info("Prediction finished.")
+        return all_preds
 
-    def predict(self, texts: List[str]) -> List[Dict[str, Any]]:
-        """Make predictions on new texts."""
-        self.model.eval()
-        dataset = SentimentDataset(texts, [0] * len(texts), self.tokenizer, self.max_length)
-        loader = DataLoader(dataset, batch_size=self.batch_size, num_workers=min(4, os.cpu_count()))
+    def save_model(self, save_path):
+        """Saves the model state dictionary."""
+        os.makedirs(os.path.dirname(save_path), exist_ok=True)
+        torch.save(self.model.state_dict(), save_path)
+        logger.info(f"Model saved to {save_path}")
 
-        predictions = []
-        with torch.no_grad():
-            for batch in loader:
-                input_ids = batch['input_ids'].to(self.device)
-                attention_mask = batch['attention_mask'].to(self.device)
+    def load_model(self, load_path):
+        """Loads the model state dictionary."""
+        if not os.path.exists(load_path):
+             logger.error(f"Model path not found: {load_path}")
+             raise FileNotFoundError(f"Model file not found at {load_path}")
+        self.model.load_state_dict(torch.load(load_path, map_location=self.device))
+        self.model.to(self.device) # Ensure model is on the correct device
+        logger.info(f"Model loaded from {load_path}")
 
-                outputs = self.model(input_ids, attention_mask)
-                probabilities = torch.softmax(outputs, dim=1)
-                preds = torch.argmax(probabilities, dim=1)
-                confs = probabilities[torch.arange(len(preds)), preds]
+    def save_results(self, results_path, results_data):
+        """Saves evaluation results to a JSON file."""
+        os.makedirs(os.path.dirname(results_path), exist_ok=True)
+        # Load existing results if file exists
+        if os.path.exists(results_path):
+            try:
+                with open(results_path, 'r') as f:
+                    existing_data = json.load(f)
+            except json.JSONDecodeError:
+                existing_data = {} # Start fresh if file is corrupted
+        else:
+            existing_data = {}
 
-                for i in range(len(preds)):
-                    pred_class = preds[i].item()
-                    confidence = confs[i].item()
-                    predictions.append({
-                        'label': 'Positive' if pred_class == 1 else 'Negative',
-                        'confidence': confidence
-                    })
-        return predictions
+        # Update with new results (using a unique key, e.g., model name + timestamp or mode)
+        result_key = f"{results_data.get('model_name', 'GNNRoBERTa')}_{results_data.get('mode', 'Test')}_{int(time.time())}"
+        existing_data[result_key] = results_data
 
-
-    def save_model(self, path: str):
-        """Save the model and optimizer state."""
-        os.makedirs(os.path.dirname(path), exist_ok=True)
+        # Save updated results
         try:
-            save_dict = {
-                'model_state_dict': self.model.state_dict(),
-                'optimizer_state_dict': self.optimizer.state_dict(),
-            }
-            if self.scheduler:
-                 save_dict['scheduler_state_dict'] = self.scheduler.state_dict()
-
-            # Save architecture config needed for reloading
-            save_dict['model_config'] = {
-                'roberta_model': self.roberta_model,
-                'gnn_out_features': self.gnn_out_features,
-                'gnn_heads': self.gnn_heads,
-                'gnn_layers': self.gnn_layers,
-                'dropout': self.dropout,
-                'freeze_roberta': self.freeze_roberta,
-                'use_layer_norm': self.use_layer_norm,
-            }
-            torch.save(save_dict, path)
-            logging.info(f"GNN-RoBERTa model saved successfully to {path}")
+            with open(results_path, 'w') as f:
+                json.dump(existing_data, f, indent=4)
+            logger.info(f"Results saved to {results_path}")
         except Exception as e:
-            logging.error(f"Failed to save GNN-RoBERTa model to {path}: {e}", exc_info=True)
+            logger.error(f"Failed to save results to {results_path}: {e}")
 
+# Example usage (typically called from a main script)
+if __name__ == '__main__':
+    # This is placeholder example code.
+    # The actual usage would be driven by a main script like gnn_roberta_main.py
+    # which would load config, data, and call the classifier methods.
 
-    def load_model(self, path: str):
-        """Load the model and optimizer state."""
-        if not os.path.exists(path):
-            logging.error(f"Model file not found at {path}")
-            raise FileNotFoundError(f"No GNN-RoBERTa model checkpoint found at {path}")
-        try:
-            checkpoint = torch.load(path, map_location=self.device)
+    # Example Config (replace with actual loading from yaml)
+    config_example = {
+        'roberta_model_name': 'roberta-base',
+        'gnn_layers': 2,
+        'gnn_heads': 4,
+        'gnn_out_features': 64, # Smaller for example
+        'dropout': 0.1,
+        'num_labels': 2,
+        'freeze_roberta': False,
+        'learning_rate': 2e-5,
+        'weight_decay': 0.01,
+        'epochs': 1, # Small for example
+        'batch_size': 16, # Small for example
+        'scheduler_warmup_steps': 0,
+        'device': 'cuda' if torch.cuda.is_available() else 'cpu',
+        'max_seq_length': 64
+    }
 
-            # --- Critical: Re-instantiate model with saved architecture ---
-            # This assumes the __init__ args match the keys in model_config
-            saved_config = checkpoint.get('model_config', {})
-            if not saved_config:
-                 logging.warning(f"Checkpoint {path} missing 'model_config'. Attempting load with current defaults.")
-                 # If config is missing, the current instance's parameters MUST match the saved model's architecture
-            else:
-                 # Update current instance parameters from saved config BEFORE loading state_dict
-                 self.roberta_model = saved_config.get('roberta_model', self.roberta_model)
-                 self.gnn_out_features = saved_config.get('gnn_out_features', self.gnn_out_features)
-                 self.gnn_heads = saved_config.get('gnn_heads', self.gnn_heads)
-                 self.gnn_layers = saved_config.get('gnn_layers', self.gnn_layers)
-                 self.dropout = saved_config.get('dropout', self.dropout)
-                 self.freeze_roberta = saved_config.get('freeze_roberta', self.freeze_roberta)
-                 self.use_layer_norm = saved_config.get('use_layer_norm', self.use_layer_norm)
+    # Dummy Data
+    train_texts_ex = ["This is great!", "This is terrible."] * 10
+    train_labels_ex = [1, 0] * 10
+    val_texts_ex = ["Looks good.", "Not good."] * 5
+    val_labels_ex = [1, 0] * 5
+    test_texts_ex = ["Amazing product.", "Very disappointing."] * 5
+    test_labels_ex = [1, 0] * 5
 
-                 # Re-create the model architecture based on loaded config
-                 self.model = GNNRoBERTa(
-                     roberta_model=self.roberta_model,
-                     gnn_out_features=self.gnn_out_features,
-                     gnn_heads=self.gnn_heads,
-                     gnn_layers=self.gnn_layers,
-                     dropout=self.dropout,
-                     freeze_roberta=self.freeze_roberta, # Use loaded freeze state
-                     use_layer_norm=self.use_layer_norm
-                 ).to(self.device)
-                 logging.info("Model architecture re-created from saved config.")
+    logger.info("--- Example GNN-RoBERTa Classifier Run ---")
 
+    # Initialize Classifier
+    classifier = GNNRoBERTaClassifier(config_example)
 
-            # Load model state dict
-            self.model.load_state_dict(checkpoint['model_state_dict'])
+    # Train
+    logger.info("Starting example training...")
+    history = classifier.train(train_texts_ex, train_labels_ex, val_texts_ex, val_labels_ex)
+    logger.info(f"Training History: {history}")
 
-            # --- Re-create optimizer AFTER model is potentially recreated ---
-            # This ensures optimizer parameters match the potentially updated model structure/freeze state
-            if not self.freeze_roberta:
-                roberta_params = [p for n, p in self.model.named_parameters() if "roberta" in n and p.requires_grad]
-                other_params = [p for n, p in self.model.named_parameters() if "roberta" not in n and p.requires_grad]
-                self.optimizer = torch.optim.AdamW([
-                    {'params': roberta_params, 'lr': self.learning_rate * 0.1}, # Use current LR settings
-                    {'params': other_params, 'lr': self.learning_rate}
-                ], weight_decay=self.weight_decay)
-            else:
-                self.optimizer = torch.optim.AdamW(
-                    [p for p in self.model.parameters() if p.requires_grad],
-                    lr=self.learning_rate, weight_decay=self.weight_decay
-                )
-            logging.info("Optimizer re-created based on loaded model state.")
+    # Evaluate
+    logger.info("Starting example evaluation...")
+    results = classifier.evaluate(test_texts_ex, test_labels_ex, model_name='GNNRoBERTa_Example')
+    logger.info(f"Evaluation Results (Loss, Acc, Prec, Rec, F1): {results}")
 
+    # Predict
+    logger.info("Starting example prediction...")
+    predictions = classifier.predict(["This might work.", "I hate this."])
+    logger.info(f"Predictions: {predictions}") # Example: [1, 0]
 
-            # Load optimizer state dict
-            self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+    # Save/Load Model
+    model_save_path = 'src/models/gnn_roberta_example.pt'
+    classifier.save_model(model_save_path)
+    # classifier.load_model(model_save_path) # Example of loading
+    # logger.info("Model reloaded.")
 
-            # Load scheduler state if available and needed
-            if self.scheduler and 'scheduler_state_dict' in checkpoint:
-                # Re-initialize scheduler before loading state if needed (depends on scheduler type)
-                 total_steps_placeholder = 1000 # Placeholder, actual steps depend on context
-                 self.scheduler = get_linear_schedule_with_warmup(
-                     self.optimizer,
-                     num_warmup_steps=self.scheduler_warmup_steps, # Use current settings
-                     num_training_steps=total_steps_placeholder
-                 )
-                 self.scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
-                 logging.info("Scheduler state loaded.")
+    logger.info("--- Example Run Finished ---")
 
-
-            logging.info(f"GNN-RoBERTa model, optimizer, and scheduler (if applicable) loaded successfully from {path}")
-
-        except KeyError as e:
-             logging.error(f"Missing key in checkpoint {path}: {e}. Checkpoint might be incompatible or incomplete.", exc_info=True)
-             raise
-        except Exception as e:
-            logging.error(f"Failed to load GNN-RoBERTa model from {path}: {e}", exc_info=True)
-            raise
