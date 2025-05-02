@@ -23,7 +23,7 @@ if src_dir not in sys.path:
 try:
     from utils.data_processor import DataProcessor
     # Import the new GNN-RoBERTa classifier and compatible dataset
-    from utils.gnn_roberta_classifier import GNNRoBERTaSentimentClassifier
+    from utils.gnn_roberta_classifier import GNNRoBERTaClassifier
     from utils.lstm_roberta_classifier import SentimentDataset 
     from utils.results_tracker import save_model_results
 except ImportError as e:
