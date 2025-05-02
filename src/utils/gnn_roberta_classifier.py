@@ -2,7 +2,9 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data import DataLoader, TensorDataset, RandomSampler, SequentialSampler
-from transformers import RobertaModel, RobertaTokenizer, AdamW, get_linear_schedule_with_warmup
+# Corrected imports: AdamW is now typically imported from torch.optim
+from torch.optim import AdamW
+from transformers import RobertaModel, RobertaTokenizer, get_linear_schedule_with_warmup # Removed AdamW from here
 from sklearn.metrics import accuracy_score, precision_recall_fscore_support, confusion_matrix
 import numpy as np
 import time
@@ -332,6 +334,7 @@ class GNNRoBERTaClassifier:
         val_dataloader = self._create_dataloader(val_texts, val_labels, batch_size, sampler_type='sequential')
 
         # Optimizer and Scheduler
+        # Use AdamW imported from torch.optim
         optimizer = AdamW(self.model.parameters(), lr=learning_rate, weight_decay=weight_decay)
         total_steps = len(train_dataloader) * epochs
         scheduler = get_linear_schedule_with_warmup(optimizer, num_warmup_steps=warmup_steps, num_training_steps=total_steps)
@@ -648,4 +651,3 @@ if __name__ == '__main__':
     # logger.info("Model reloaded.")
 
     logger.info("--- Example Run Finished ---")
-
