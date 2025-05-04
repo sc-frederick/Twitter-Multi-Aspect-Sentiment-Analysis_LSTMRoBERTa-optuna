@@ -16,7 +16,7 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 
 # Configure logging
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+# logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
 # --- GATLayer Class ---
@@ -150,15 +150,7 @@ class GNNRoBERTaModel(nn.Module):
     def __init__(self, roberta_model_name='roberta-base', gnn_layers=2, gnn_heads=4, gnn_out_features=128, dropout=0.1, num_labels=2, freeze_roberta=False):
         """
         Initializes the GNNRoBERTaModel.
-
-        Args:
-            roberta_model_name (str, optional): Name of the pre-trained RoBERTa model. Defaults to 'roberta-base'.
-            gnn_layers (int, optional): Number of GAT layers. Defaults to 2.
-            gnn_heads (int, optional): Number of attention heads in each GAT layer. Defaults to 4.
-            gnn_out_features (int, optional): Output feature dimension per head in GAT layers. Defaults to 128.
-            dropout (float, optional): Dropout probability. Defaults to 0.1.
-            num_labels (int, optional): Number of output classes. Defaults to 2.
-            freeze_roberta (bool, optional): Whether to freeze RoBERTa layers during training. Defaults to False.
+        Args are documented in the original code.
         """
         super(GNNRoBERTaModel, self).__init__()
         self.num_labels = num_labels
@@ -167,19 +159,19 @@ class GNNRoBERTaModel(nn.Module):
 
         # Freeze RoBERTa layers if specified
         if freeze_roberta:
+            logger.info("Freezing RoBERTa parameters.")
             for param in self.roberta.parameters():
                 param.requires_grad = False
+        else:
+            logger.info("RoBERTa parameters will be fine-tuned (not frozen).")
 
         # GAT Layers
         self.gat_layers = nn.ModuleList()
         gat_input_dim = self.roberta_hidden_size
         for i in range(gnn_layers):
-            # If it's the last GAT layer, ensure concat=False if we want averaging,
-            # or adjust the classifier input dimension if concat=True.
-            # Here, we assume concatenation for all but the last, or adjust classifier later.
-            # For simplicity, let's assume concat=True for all layers for now.
+            # Assume concatenation for all layers for simplicity.
             # The final output dimension will be gnn_heads * gnn_out_features.
-            concat_layer = True # You might want to set this to False for the last layer
+            concat_layer = True
             self.gat_layers.append(
                 GATLayer(gat_input_dim, gnn_out_features, gnn_heads, dropout, concat=concat_layer)
             )
@@ -200,13 +192,7 @@ class GNNRoBERTaModel(nn.Module):
     def forward(self, input_ids, attention_mask=None):
         """
         Performs the forward pass of the GNN-RoBERTa model.
-
-        Args:
-            input_ids (torch.Tensor): Input token IDs (batch_size, seq_len).
-            attention_mask (torch.Tensor, optional): Attention mask (batch_size, seq_len). Defaults to None.
-
-        Returns:
-            torch.Tensor: Logits for each class (batch_size, num_labels).
+        Args are documented in the original code.
         """
         # Get RoBERTa embeddings
         # outputs[0] is the last hidden state: (batch_size, seq_len, hidden_size)
@@ -240,19 +226,16 @@ class GNNRoBERTaClassifier:
     def __init__(self, config):
         """
         Initializes the GNNRoBERTaClassifier.
-
-        Args:
-            config (dict): Configuration dictionary containing model and training parameters.
-                           Expected keys: roberta_model_name, gnn_layers, gnn_heads,
-                           gnn_out_features, dropout, num_labels, freeze_roberta,
-                           learning_rate, weight_decay, epochs, batch_size,
-                           scheduler_warmup_steps, device, max_seq_length.
+        Args are documented in the original code.
         """
         self.config = config
         self.device = torch.device(config.get('device', 'cuda' if torch.cuda.is_available() else 'cpu'))
         self.tokenizer = RobertaTokenizer.from_pretrained(config['roberta_model_name'])
         self.max_seq_length = config.get('max_seq_length', 128) # Default max sequence length
-        self.epochs = config.get('epochs', 3) # <<< ADDED: Store epochs from config, default to 3
+        self.epochs = config.get('epochs', 3) # Store epochs from config
+
+        # Store freeze setting
+        self.freeze_roberta = config.get('freeze_roberta', False)
 
         self.model = GNNRoBERTaModel(
             roberta_model_name=config['roberta_model_name'],
@@ -261,16 +244,18 @@ class GNNRoBERTaClassifier:
             gnn_out_features=config['gnn_out_features'],
             dropout=config['dropout'],
             num_labels=config.get('num_labels', 2),
-            freeze_roberta=config.get('freeze_roberta', False)
+            freeze_roberta=self.freeze_roberta # Pass freeze flag
         ).to(self.device)
 
         logger.info(f"GNN-RoBERTa Classifier initialized on device: {self.device}")
-        logger.info(f"Freeze RoBERTa: {config.get('freeze_roberta', False)}")
+        logger.info(f"Freeze RoBERTa: {self.freeze_roberta}")
         logger.info(f"GNN Layers: {config['gnn_layers']}, Heads: {config['gnn_heads']}, Out Features/Head: {config['gnn_out_features']}")
-        logger.info(f"Training Epochs set to: {self.epochs}") # <<< ADDED: Log epochs
+        logger.info(f"Training Epochs set to: {self.epochs}")
 
         # Store training history
         self.history = {'train_loss': [], 'val_loss': [], 'val_accuracy': [], 'val_precision': [], 'val_recall': [], 'val_f1': []}
+
+        # Optimizer and Scheduler are initialized in train() method
 
 
     def _create_dataloader(self, texts, labels, batch_size, sampler_type='random'):
@@ -316,18 +301,10 @@ class GNNRoBERTaClassifier:
     def train(self, train_texts, train_labels, val_texts, val_labels):
         """
         Trains the GNN-RoBERTa model.
-
-        Args:
-            train_texts (list): List of training texts.
-            train_labels (list): List of training labels.
-            val_texts (list): List of validation texts.
-            val_labels (list): List of validation labels.
-
-        Returns:
-            dict: Training history containing loss and metrics per epoch.
+        Args are documented in the original code.
         """
         batch_size = self.config['batch_size']
-        epochs = self.epochs # <<< CHANGED: Use stored self.epochs
+        epochs = self.epochs # Use stored epochs
         learning_rate = self.config['learning_rate']
         weight_decay = self.config.get('weight_decay', 0.01)
         warmup_steps = self.config.get('scheduler_warmup_steps', 100)
@@ -335,9 +312,41 @@ class GNNRoBERTaClassifier:
         train_dataloader = self._create_dataloader(train_texts, train_labels, batch_size, sampler_type='random')
         val_dataloader = self._create_dataloader(val_texts, val_labels, batch_size, sampler_type='sequential')
 
-        # Optimizer and Scheduler
-        # Use AdamW imported from torch.optim
-        optimizer = AdamW(self.model.parameters(), lr=learning_rate, weight_decay=weight_decay)
+        # --- MODIFIED OPTIMIZER INITIALIZATION (moved here from __init__) ---
+        if not self.freeze_roberta:
+            # Separate parameters for differential learning rates
+            roberta_params = []
+            other_params = []
+            for n, p in self.model.named_parameters():
+                 if p.requires_grad:
+                     if "roberta" in n:
+                         roberta_params.append(p)
+                     else:
+                         other_params.append(p)
+
+            if not roberta_params:
+                 logger.warning("Differential LR enabled, but no RoBERTa parameters found requiring gradients. Check model structure and freeze_roberta flag.")
+                 optimizer = AdamW(
+                     [p for p in self.model.parameters() if p.requires_grad],
+                     lr=learning_rate, weight_decay=weight_decay
+                 )
+                 logger.info("Optimizer configured with single learning rate (RoBERTa params not trainable).")
+            else:
+                optimizer_grouped_parameters = [
+                    {'params': roberta_params, 'lr': learning_rate * 0.1},
+                    {'params': other_params, 'lr': learning_rate}
+                ]
+                optimizer = AdamW(optimizer_grouped_parameters, weight_decay=weight_decay)
+                logger.info(f"Optimizer configured with differential learning rates: RoBERTa LR={learning_rate * 0.1}, Head LR={learning_rate}")
+        else:
+            # Standard optimizer if RoBERTa is frozen
+            optimizer = AdamW(
+                [p for p in self.model.parameters() if p.requires_grad],
+                lr=learning_rate, weight_decay=weight_decay
+            )
+            logger.info(f"Optimizer configured with single learning rate: {learning_rate} (RoBERTa frozen).")
+        # --- END MODIFIED OPTIMIZER INITIALIZATION ---
+
         total_steps = len(train_dataloader) * epochs
         scheduler = get_linear_schedule_with_warmup(optimizer, num_warmup_steps=warmup_steps, num_training_steps=total_steps)
         logger.info(f"Scheduler initialized: {total_steps} total steps, {warmup_steps} warmup.")
@@ -383,7 +392,7 @@ class GNNRoBERTaClassifier:
                 scheduler.step() # Update learning rate schedule
 
             # Calculate average training loss for the epoch
-            avg_train_loss = total_train_loss / len(train_dataloader)
+            avg_train_loss = total_train_loss / len(train_dataloader) if len(train_dataloader) > 0 else 0.0
             training_time = self._format_time(time.time() - t0)
             logger.info(f"  Average training loss: {avg_train_loss:.4f}")
             logger.info(f"  Training epoch took: {training_time}")
@@ -418,7 +427,7 @@ class GNNRoBERTaClassifier:
                 all_labels.extend(label_ids)
 
             # Calculate metrics
-            avg_val_loss = total_eval_loss / len(val_dataloader)
+            avg_val_loss = total_eval_loss / len(val_dataloader) if len(val_dataloader) > 0 else 0.0
             accuracy = accuracy_score(all_labels, all_preds)
             precision, recall, f1, _ = precision_recall_fscore_support(all_labels, all_preds, average='weighted', zero_division=0)
 
@@ -445,16 +454,7 @@ class GNNRoBERTaClassifier:
     def evaluate(self, test_texts, test_labels, plot_cm=True, results_dir='src/results', model_name='GNNRoBERTa'):
         """
         Evaluates the model on the test set.
-
-        Args:
-            test_texts (list): List of test texts.
-            test_labels (list): List of test labels.
-            plot_cm (bool, optional): Whether to plot the confusion matrix. Defaults to True.
-            results_dir (str, optional): Directory to save the confusion matrix plot. Defaults to 'src/results'.
-            model_name (str, optional): Name prefix for the confusion matrix file. Defaults to 'GNNRoBERTa'.
-
-        Returns:
-            tuple: (loss, accuracy, precision, recall, f1)
+        Args are documented in the original code.
         """
         batch_size = self.config['batch_size']
         test_dataloader = self._create_dataloader(test_texts, test_labels, batch_size, sampler_type='sequential')
@@ -485,7 +485,7 @@ class GNNRoBERTaClassifier:
             all_labels.extend(label_ids)
 
         # Calculate metrics
-        avg_test_loss = total_eval_loss / len(test_dataloader)
+        avg_test_loss = total_eval_loss / len(test_dataloader) if len(test_dataloader) > 0 else 0.0
         accuracy = accuracy_score(all_labels, all_preds)
         precision, recall, f1, _ = precision_recall_fscore_support(all_labels, all_preds, average='weighted', zero_division=0)
         cm = confusion_matrix(all_labels, all_preds)
@@ -555,19 +555,38 @@ class GNNRoBERTaClassifier:
         return all_preds
 
     def save_model(self, save_path):
-        """Saves the model state dictionary."""
+        """Saves the model state dictionary and config."""
         os.makedirs(os.path.dirname(save_path), exist_ok=True)
-        torch.save(self.model.state_dict(), save_path)
-        logger.info(f"Model saved to {save_path}")
+        save_dict = {
+            'model_state_dict': self.model.state_dict(),
+            'config': self.config # Save the config used to initialize
+        }
+        try:
+            torch.save(save_dict, save_path)
+            logger.info(f"Model and config saved to {save_path}")
+        except Exception as e:
+            logger.error(f"Failed to save model to {save_path}: {e}", exc_info=True)
+
 
     def load_model(self, load_path):
-        """Loads the model state dictionary."""
+        """Loads the model state dictionary. Assumes config matches."""
         if not os.path.exists(load_path):
              logger.error(f"Model path not found: {load_path}")
              raise FileNotFoundError(f"Model file not found at {load_path}")
-        self.model.load_state_dict(torch.load(load_path, map_location=self.device))
-        self.model.to(self.device) # Ensure model is on the correct device
-        logger.info(f"Model loaded from {load_path}")
+        try:
+            checkpoint = torch.load(load_path, map_location=self.device)
+            # Optional: Check if saved config matches current config
+            # saved_config = checkpoint.get('config')
+            # if saved_config and saved_config != self.config:
+            #     logger.warning(f"Loaded model config differs from current config. Ensure compatibility.")
+
+            self.model.load_state_dict(checkpoint['model_state_dict'])
+            self.model.to(self.device) # Ensure model is on the correct device
+            logger.info(f"Model loaded from {load_path}")
+        except Exception as e:
+             logger.error(f"Failed to load model state from {load_path}: {e}", exc_info=True)
+             raise
+
 
     def save_results(self, results_path, results_data):
         """Saves evaluation results to a JSON file."""
@@ -603,16 +622,16 @@ if __name__ == '__main__':
     # Example Config (replace with actual loading from yaml)
     config_example = {
         'roberta_model_name': 'roberta-base',
-        'gnn_layers': 2,
-        'gnn_heads': 4,
-        'gnn_out_features': 64, # Smaller for example
+        'gnn_layers': 1, # Simpler for example
+        'gnn_heads': 2,
+        'gnn_out_features': 64,
         'dropout': 0.1,
         'num_labels': 2,
-        'freeze_roberta': False,
+        'freeze_roberta': False, # Example: Fine-tune RoBERTa
         'learning_rate': 2e-5,
         'weight_decay': 0.01,
         'epochs': 1, # Small for example
-        'batch_size': 16, # Small for example
+        'batch_size': 8, # Small for example
         'scheduler_warmup_steps': 0,
         'device': 'cuda' if torch.cuda.is_available() else 'cpu',
         'max_seq_length': 64
@@ -633,6 +652,7 @@ if __name__ == '__main__':
 
     # Train
     logger.info("Starting example training...")
+    # Note: Optimizer is now created inside the train method
     history = classifier.train(train_texts_ex, train_labels_ex, val_texts_ex, val_labels_ex)
     logger.info(f"Training History: {history}")
 
@@ -653,3 +673,4 @@ if __name__ == '__main__':
     # logger.info("Model reloaded.")
 
     logger.info("--- Example Run Finished ---")
+
