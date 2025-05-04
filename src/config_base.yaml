@@ -7,6 +7,8 @@ models_dir: "models"    # Directory for saved models
 random_state: 42
 database_path: "data/tweets_dataset.db"       # New path (inside src/data/)
 
+
+
 # --- Data Settings ---
 # Overall split for final train/test
 test_size: 0.2
@@ -15,21 +17,21 @@ hpo_validation_size: 0.25
 
 # --- LSTM-RoBERTa Settings ---
 lstm_roberta:
-  # Model Architecture Defaults (Updated with best HPO params)
+  # Model Architecture Defaults (used if not tuned or for final train)
   roberta_model: "roberta-base" # Base transformer
   embedding_dim: 768 # Typically matches RoBERTa hidden size
-  hidden_dim: 512 # Updated from HPO
-  num_layers: 1 # Updated from HPO
-  dropout: 0.1746074823060374 # Updated from HPO
-  num_attention_heads: 2 # Updated from HPO
+  hidden_dim: 256
+  num_layers: 2
+  dropout: 0.3
+  num_attention_heads: 4
   use_layer_norm: True
   use_residual: True
   use_pooler_output: False
-  freeze_roberta: False # Default freeze setting (was True in HPO results)
+  freeze_roberta: True # Default freeze setting
 
-  # Training Defaults (Updated with best HPO params)
-  learning_rate: 2.24827901060293e-05 # Updated from HPO
-  weight_decay: 0.0023444464259103903 # Updated from HPO
+  # Training Defaults (can be overridden by args or Optuna)
+  learning_rate: 2e-5
+  weight_decay: 0.01
   batch_size: 16
   max_length: 128
   final_epochs: 20 # Epochs for the final training run after HPO
@@ -61,18 +63,18 @@ lstm_roberta:
 
 # --- HAN-RoBERTa Settings ---
 han_roberta:
-  # Model Architecture Defaults (Updated with best HPO params)
+  # Model Architecture Defaults
   roberta_model: "roberta-base"
-  hidden_dim: 384 # Updated from HPO
-  num_layers: 1   # Updated from HPO
-  dropout: 0.15397805985197155 # Updated from HPO
+  hidden_dim: 256 # Dimension for the GRU/LSTM layer after RoBERTa
+  num_layers: 1   # Number of GRU/LSTM layers
+  dropout: 0.3
   use_gru: True   # Use GRU (True) or LSTM (False) after RoBERTa
   use_layer_norm: True
-  freeze_roberta: False # Default freeze setting (was True in HPO results)
+  freeze_roberta: True # Default freeze setting
 
-  # Training Defaults (Updated with best HPO params)
-  learning_rate: 1.9491107223936995e-05 # Updated from HPO
-  weight_decay: 0.01201821907722889 # Updated from HPO
+  # Training Defaults
+  learning_rate: 2e-5
+  weight_decay: 0.01
   batch_size: 16
   max_length: 128
   final_epochs: 20 # Epochs for the final training run after HPO
@@ -103,21 +105,21 @@ han_roberta:
 
 # --- GNN-RoBERTa Settings --- #
 gnn_roberta:
-  # Model Architecture Defaults (Updated with provided parameters)
-  roberta_model_name: "roberta-base"
-  gnn_out_features: 256 # Updated
-  gnn_heads: 8          # Updated
-  gnn_layers: 2         # Updated
-  dropout: 0.4197840530544336 # Updated
+  # Model Architecture Defaults
+  roberta_model_name: "roberta-base" # <<< CHANGED THIS LINE
+  gnn_out_features: 128 # Output features per GAT head
+  gnn_heads: 4          # Number of GAT heads
+  gnn_layers: 1         # Number of GAT layers (SimpleGATLayer)
+  dropout: 0.3
   use_layer_norm: True
-  freeze_roberta: False # Updated (was already True)
+  freeze_roberta: True # Default freeze setting
 
-  # Training Defaults (Updated with provided parameters)
-  learning_rate: 3.379316335266599e-05 # Updated
-  weight_decay: 0.0004773227509504742 # Updated
+  # Training Defaults
+  learning_rate: 2e-5
+  weight_decay: 0.01
   batch_size: 16
   max_length: 128
-  final_epochs: 20 # Updated (from 'epochs' in log)
+  final_epochs: 20 # Epochs for the final training run after HPO
   use_scheduler: True
   scheduler_warmup_steps: 100
   gradient_accumulation_steps: 2
@@ -145,18 +147,18 @@ gnn_roberta:
 
 # --- ATAE-RoBERTa Settings --- #
 atae_roberta:
-  # Model Architecture Defaults (Updated with best HPO params)
+  # Model Architecture Defaults
   roberta_model: "roberta-base"
-  lstm_hidden_dim: 384 # Updated from HPO
-  lstm_layers: 1       # Updated from HPO
-  bidirectional_lstm: True # Use BiLSTM (was True in HPO results)
-  dropout: 0.4509906455425035 # Updated from HPO
+  lstm_hidden_dim: 256 # Hidden dimension for the LSTM layer
+  lstm_layers: 1       # Number of LSTM layers
+  bidirectional_lstm: True # Use BiLSTM
+  dropout: 0.3
   use_layer_norm: True
-  freeze_roberta: False # Default freeze setting (was True in HPO results)
+  freeze_roberta: True # Default freeze setting
 
-  # Training Defaults (Updated with best HPO params)
-  learning_rate: 4.99649048040059e-05 # Updated from HPO
-  weight_decay: 0.0723935964507385 # Updated from HPO
+  # Training Defaults
+  learning_rate: 2e-5
+  weight_decay: 0.01
   batch_size: 16
   max_length: 128
   final_epochs: 20 # Epochs for the final training run after HPO
