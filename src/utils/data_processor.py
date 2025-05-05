@@ -238,10 +238,10 @@ class DataManager:
         logger.info(f"Downloading dataset '{KAGGLE_DATASET_OWNER}/{KAGGLE_DATASET_NAME}' to '{self.data_dir}'...")
         try:
             # kagglehub.dataset_download returns the path to the downloaded files
+            # Removed the unsupported 'force' argument
             dataset_path = kagglehub.dataset_download(
                 f"{KAGGLE_DATASET_OWNER}/{KAGGLE_DATASET_NAME}",
-                path=self.data_dir,
-                force=False # Set to True to always re-download
+                path=self.data_dir
             )
             logger.info(f"Dataset downloaded/verified at: {dataset_path}")
             return str(dataset_path) # Ensure it's a string
@@ -337,7 +337,8 @@ class DataManager:
             # Ensure essential columns ('text', 'text_clean', 'label') exist in both
             required_cols = ['text', 'text_clean', 'label'] # Adjust if test set lacks labels
             missing_train = [col for col in required_cols if col not in train_df.columns]
-            missing_test = [col for col in required_cols if col not in test_df.columns and col != 'label'] # Test might not have labels
+            # Test might not have labels, or might have placeholder -1
+            missing_test = [col for col in required_cols if col not in test_df.columns and col != 'label']
 
             if missing_train:
                  logger.error(f"Train DataFrame missing required columns: {missing_train}")
@@ -513,4 +514,3 @@ if __name__ == "__main__":
 
     except Exception as e:
         logger.error(f"Error during testing: {e}", exc_info=True)
-
