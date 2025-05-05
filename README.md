@@ -39,8 +39,8 @@ The project includes an automated data processing pipeline that downloads the `
 1. **Clone the repository:**
 
 ```bash
-git clone https://github.com/sc-frederick/Twitter-Multi-Aspect-Sentiment-Analysis_LSTMRoBERTa-optuna.git
-cd Twitter-Multi-Aspect-Sentiment-Analysis_LSTMRoBERTa-optuna
+git clone [[https://github.com/yourusername/your-repo-name.git](https://github.com/yourusername/your-repo-name.git)] # Replace with your repo URL
+cd your-repo-name
 ```
 2. **Create a virtual environment (Recommended):**
 
@@ -114,13 +114,18 @@ The main scripts are in `src/scripts/`:
 
 They operate in different modes specified by the `--mode` argument.
 
+<br>
+
 **Common Modes:**
 
-**1\. Hyperparameter Optimization (`--mode optimize`)**
+**<br>
+**
+
+### **1\. Hyperparameter Optimization (`--mode optimize`)**
 
 Runs Optuna to find the best hyperparameters for the respective model, using settings from its section in `config.yaml`. After optimization, it trains a final model using the best found parameters on the full training set (derived from `train.csv`) and evaluates it on the test set (derived from `test.csv`).
 
-```bash
+```
 # Optimize LSTM-RoBERTa
 python src/scripts/lstm_roberta_main.py --mode optimize
 
@@ -136,3 +141,117 @@ python src/scripts/atae_roberta_main.py --mode optimize
 # Optional Overrides (Example for GNN):
 python src/scripts/gnn_roberta_main.py --mode optimize --n_trials 15 --sample_size_train 20000
 ```
+
+<br>
+
+<br>
+
+### 2\. Training (--mode train)
+
+Skips Optuna and trains a single model using the default parameters specified in its config.yaml section (or HPO best params if optimization was run previously and defaults weren't manually reset). Trains on the full training set (from train.csv, potentially sampled) and evaluates on the test set (from test.csv, potentially sampled).  
+
+```
+# Train LSTM-RoBERTa
+python src/scripts/lstm_roberta_main.py --mode train
+
+# Train HAN-RoBERTa
+python src/scripts/han_roberta_main.py --mode train
+
+# Train GNN-RoBERTa
+python src/scripts/gnn_roberta_main.py --mode train
+
+# Train ATAE-RoBERTa
+python src/scripts/atae_roberta_main.py --mode train
+
+# Optional Overrides (Example for ATAE):
+python src/scripts/atae_roberta_main.py --mode train --final_epochs 5 --sample_size_train 50000
+```
+
+<br>
+
+<br>
+<br>
+<br>
+
+### 3\. Testing (--mode test)
+
+Loads the last saved final model for the respective type (e.g., lstm\_roberta\_model\_final.pt, han\_roberta\_model\_final.pt, etc.) from the src/models/ directory and evaluates it on the test set (from test.csv).  
+
+```
+# Test LSTM-RoBERTa
+python src/scripts/lstm_roberta_main.py --mode test
+
+# Test HAN-RoBERTa
+python src/scripts/han_roberta_main.py --mode test
+
+# Test GNN-RoBERTa
+python src/scripts/gnn_roberta_main.py --mode test
+
+# Test ATAE-RoBERTa
+python src/scripts/atae_roberta_main.py --mode test
+
+# Optional Override (Example for LSTM): Test a specific model checkpoint
+# python src/scripts/lstm_roberta_main.py --mode test --load_model_path src/models/some_other_lstm_model.pt
+# (Note: Loading specific paths might require code adjustments if not fully implemented)
+```
+
+<br>
+
+<br>
+<br>
+<br>
+
+### Running All Models Sequentially
+
+Use the provided wrapper script (run\_all\_models.sh for Linux/macOS) located in the project root. Pass any arguments intended for the underlying Python scripts directly to the wrapper script.  
+
+```
+# Example: Train all models for 5 epochs on Linux/macOS
+chmod +x run_all_models.sh # Make executable first
+./run_all_models.sh --mode train --final_epochs 5
+
+# Example: Optimize all models with 25 trials
+./run_all_models.sh --mode optimize --n_trials 25
+```
+
+<br>
+
+<br>
+<br>
+<br>
+
+### GPU Support
+
+The scripts will automatically use an available NVIDIA GPU (CUDA) if detected by PyTorch. Ensure your drivers and CUDA toolkit are correctly installed. To force CPU usage:  
+
+```
+# Linux/macOS
+export CUDA_VISIBLE_DEVICES=""
+python src/scripts/lstm_roberta_main.py --mode train
+
+# Windows (Command Prompt)
+set CUDA_VISIBLE_DEVICES=""
+python src\scripts\lstm_roberta_main.py --mode train
+
+# Windows (PowerShell)
+$env:CUDA_VISIBLE_DEVICES=""
+python src\scripts\lstm_roberta_main.py --mode train
+```
+
+<br>
+
+<br>
+<br>
+<br>
+
+### Output
+
+```
+Models: Trained models are saved in the directory specified by models_dir in config.yaml (default: src/models/), with distinct names like lstm_roberta_model_final.pt, han_roberta_model_final.pt, gnn_roberta_model_final.pt, atae_roberta_model_final.pt.
+
+Results: Evaluation metrics (accuracy, precision, recall, F1) and parameters are logged to src/model_results.json. Entries are identified by model name and mode (e.g., LSTMRoBERTa_Train, HANRoBERTa_Optimize, GNNRoBERTa_Test, ATAERoBERTa_Train). Confusion matrix plots are saved to the results_dir (default: src/results/) with model-specific names (e.g., lstm_roberta_test_confusion_matrix.png).
+
+Optuna Databases: Optimization studies are stored in separate SQLite databases in the results_dir (e.g., optuna_lstm_roberta.db, optuna_han_roberta.db, optuna_gnn_roberta.db, optuna_atae_roberta.db).
+```
+
+<br>
