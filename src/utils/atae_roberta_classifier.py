@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 
 # Re-use the SentimentDataset from the LSTM version as input format is compatible
 try:
-    from .lstm_roberta_classifier import SentimentDataset
+    from .lstm_roberta_classifier import SentimentDataset # Use the updated one
 except ImportError:
     logger.error("Could not import SentimentDataset. Ensure lstm_roberta_classifier.py is accessible.")
     # Define a basic compatible Dataset if import fails (example structure)
@@ -36,6 +36,10 @@ except ImportError:
         def __getitem__(self, idx: int) -> Dict[str, torch.Tensor]:
             text = str(self.texts[idx]); label = self.labels[idx]
             encoding = self.tokenizer(text, max_length=self.max_length, padding='max_length', truncation=True, return_tensors='pt')
+            # --- Add label check ---
+            if not (0 <= label <= 2):
+                 logger.warning(f"Invalid label found at index {idx}: {label}. Replacing with 1 (Neutral). Text: {text[:100]}...")
+                 label = 1
             return {'input_ids': encoding['input_ids'].squeeze(), 'attention_mask': encoding['attention_mask'].squeeze(), 'label': torch.tensor(label, dtype=torch.long)}
 
 class Attention(nn.Module):
@@ -63,28 +67,12 @@ class Attention(nn.Module):
             context_vector: Weighted sum of LSTM outputs [batch_size, hidden_dim]
             attention_weights: Attention weights [batch_size, seq_len]
         """
-        # Project LSTM outputs: [batch_size, seq_len, hidden_dim]
         projected_output = self.tanh(self.attention_layer(lstm_output))
-
-        # Compute attention scores (dot product with context vector)
-        # self.context_vector shape: [hidden_dim] -> [1, hidden_dim, 1] for bmm
-        # scores shape: [batch_size, seq_len]
         scores = torch.bmm(projected_output, self.context_vector.unsqueeze(0).repeat(projected_output.size(0), 1).unsqueeze(2)).squeeze(2)
-
-        # Apply mask (set scores for padding tokens to -inf before softmax)
         if attention_mask is not None:
             scores = scores.masked_fill(attention_mask == 0, -float('inf'))
-
-        # Compute attention weights
-        # attention_weights shape: [batch_size, seq_len]
-        attention_weights = self.softmax(scores) # Softmax over dim 1 (seq_len)
-
-        # Compute context vector (weighted sum of LSTM outputs)
-        # attention_weights shape: [batch_size, 1, seq_len] for bmm
-        # lstm_output shape: [batch_size, seq_len, hidden_dim]
-        # context_vector shape: [batch_size, hidden_dim]
+        attention_weights = self.softmax(scores)
         context_vector = torch.bmm(attention_weights.unsqueeze(1), lstm_output).squeeze(1)
-
         return context_vector, attention_weights
 
 
@@ -101,9 +89,11 @@ class ATAERoBERTa(nn.Module):
         dropout: float = 0.3,
         freeze_roberta: bool = True,
         bidirectional_lstm: bool = True,
-        use_layer_norm: bool = True
+        use_layer_norm: bool = True,
+        num_classes: int = 3 # Added num_classes
     ):
         super().__init__()
+        self.num_classes = num_classes # Store num_classes
 
         self.roberta = AutoModel.from_pretrained(roberta_model)
         roberta_hidden_size = self.roberta.config.hidden_size
@@ -143,7 +133,8 @@ class ATAERoBERTa(nn.Module):
             nn.LayerNorm(lstm_output_dim // 2) if use_layer_norm else nn.Identity(),
             nn.ReLU(),
             nn.Dropout(dropout),
-            nn.Linear(lstm_output_dim // 2, 2) # Binary classification
+            # --- Ensure final layer outputs num_classes ---
+            nn.Linear(lstm_output_dim // 2, self.num_classes)
         )
 
     def forward(self, input_ids: torch.Tensor, attention_mask: torch.Tensor) -> torch.Tensor:
@@ -157,32 +148,15 @@ class ATAERoBERTa(nn.Module):
         Returns:
             Logits tensor [batch_size, num_classes]
         """
-        # Get RoBERTa embeddings
-        roberta_output = self.roberta(
-            input_ids=input_ids,
-            attention_mask=attention_mask,
-            return_dict=True
-        )
-        sequence_output = roberta_output.last_hidden_state # [batch_size, seq_len, roberta_hidden_size]
-
+        roberta_output = self.roberta(input_ids=input_ids, attention_mask=attention_mask, return_dict=True)
+        sequence_output = roberta_output.last_hidden_state
         if self.use_layer_norm and hasattr(self, 'roberta_layer_norm'):
             sequence_output = self.roberta_layer_norm(sequence_output)
-
-        # Pass through LSTM
-        # lstm_output: [batch_size, seq_len, lstm_output_dim]
         lstm_output, (h_n, c_n) = self.lstm(sequence_output)
-
         if self.use_layer_norm and hasattr(self, 'lstm_layer_norm'):
             lstm_output = self.lstm_layer_norm(lstm_output)
-
-        # Apply Attention
-        # context_vector: [batch_size, lstm_output_dim]
-        # attn_weights: [batch_size, seq_len]
         context_vector, attn_weights = self.attention(lstm_output, attention_mask=attention_mask)
-
-        # Classify the context vector derived from attention
         logits = self.classifier(context_vector)
-
         return logits
 
 
@@ -208,7 +182,8 @@ class ATAERoBERTaSentimentClassifier:
         use_scheduler: bool = True,
         scheduler_warmup_steps: int = 100,
         gradient_accumulation_steps: int = 2,
-        max_grad_norm: float = 1.0
+        max_grad_norm: float = 1.0,
+        num_classes: int = 3 # Added num_classes
     ):
         self.roberta_model = roberta_model
         self.lstm_hidden_dim = lstm_hidden_dim
@@ -218,7 +193,7 @@ class ATAERoBERTaSentimentClassifier:
         self.batch_size = batch_size
         self.max_length = max_length
         self.num_epochs = num_epochs
-        self.freeze_roberta = freeze_roberta # Store freeze setting
+        self.freeze_roberta = freeze_roberta
         self.device = device or ('cuda' if torch.cuda.is_available() else 'cpu')
         self.bidirectional_lstm = bidirectional_lstm
         self.use_layer_norm = use_layer_norm
@@ -227,6 +202,7 @@ class ATAERoBERTaSentimentClassifier:
         self.scheduler_warmup_steps = scheduler_warmup_steps
         self.gradient_accumulation_steps = gradient_accumulation_steps
         self.max_grad_norm = max_grad_norm
+        self.num_classes = num_classes # Store num_classes
 
         self.tokenizer = AutoTokenizer.from_pretrained(roberta_model)
         self.model = ATAERoBERTa(
@@ -234,49 +210,35 @@ class ATAERoBERTaSentimentClassifier:
             lstm_hidden_dim=lstm_hidden_dim,
             lstm_layers=lstm_layers,
             dropout=dropout,
-            freeze_roberta=self.freeze_roberta, # Pass freeze flag
+            freeze_roberta=self.freeze_roberta,
             bidirectional_lstm=bidirectional_lstm,
-            use_layer_norm=use_layer_norm
+            use_layer_norm=use_layer_norm,
+            num_classes=self.num_classes # Pass num_classes
         ).to(self.device)
 
-        # --- MODIFIED OPTIMIZER INITIALIZATION ---
+        # --- MODIFIED OPTIMIZER INITIALIZATION (Re-used) ---
         if not self.freeze_roberta:
-            # Separate parameters for differential learning rates
             roberta_params = []
             other_params = []
             for n, p in self.model.named_parameters():
                 if p.requires_grad:
-                    if "roberta" in n:
-                        roberta_params.append(p)
-                    else:
-                        other_params.append(p)
-
+                    if "roberta" in n: roberta_params.append(p)
+                    else: other_params.append(p)
             if not roberta_params:
-                 logger.warning("Differential LR enabled, but no RoBERTa parameters found requiring gradients. Check model structure and freeze_roberta flag.")
-                 self.optimizer = AdamW(
-                     [p for p in self.model.parameters() if p.requires_grad],
-                     lr=self.learning_rate, weight_decay=self.weight_decay
-                 )
+                 logger.warning("Differential LR enabled, but no RoBERTa parameters found requiring gradients.")
+                 self.optimizer = AdamW([p for p in self.model.parameters() if p.requires_grad], lr=self.learning_rate, weight_decay=self.weight_decay)
                  logger.info("Optimizer configured with single learning rate (RoBERTa params not trainable).")
             else:
-                optimizer_grouped_parameters = [
-                    {'params': roberta_params, 'lr': self.learning_rate * 0.1},
-                    {'params': other_params, 'lr': self.learning_rate}
-                ]
+                optimizer_grouped_parameters = [{'params': roberta_params, 'lr': self.learning_rate * 0.1}, {'params': other_params, 'lr': self.learning_rate}]
                 self.optimizer = AdamW(optimizer_grouped_parameters, weight_decay=self.weight_decay)
                 logger.info(f"Optimizer configured with differential learning rates: RoBERTa LR={self.learning_rate * 0.1}, Head LR={self.learning_rate}")
-
         else:
-            # Standard optimizer if RoBERTa is frozen
-            self.optimizer = AdamW(
-                [p for p in self.model.parameters() if p.requires_grad],
-                lr=self.learning_rate, weight_decay=self.weight_decay
-            )
+            self.optimizer = AdamW([p for p in self.model.parameters() if p.requires_grad], lr=self.learning_rate, weight_decay=self.weight_decay)
             logger.info(f"Optimizer configured with single learning rate: {self.learning_rate} (RoBERTa frozen).")
         # --- END MODIFIED OPTIMIZER INITIALIZATION ---
 
-        self.scheduler = None # Initialized in train()
-        self.criterion = nn.CrossEntropyLoss() # Consider label smoothing
+        self.scheduler = None
+        self.criterion = nn.CrossEntropyLoss()
 
         logger.info(f"ATAE-RoBERTa Classifier initialized on device: {self.device}")
 
@@ -293,14 +255,9 @@ class ATAERoBERTaSentimentClassifier:
             val_dataset = SentimentDataset(val_texts, val_labels, self.tokenizer, self.max_length)
             val_loader = DataLoader(val_dataset, batch_size=self.batch_size, num_workers=num_workers)
 
-        # Initialize scheduler
         if self.use_scheduler:
             total_steps = len(train_loader) * self.num_epochs // self.gradient_accumulation_steps
-            self.scheduler = get_linear_schedule_with_warmup(
-                self.optimizer,
-                num_warmup_steps=self.scheduler_warmup_steps,
-                num_training_steps=total_steps
-            )
+            self.scheduler = get_linear_schedule_with_warmup(self.optimizer, num_warmup_steps=self.scheduler_warmup_steps, num_training_steps=total_steps)
             logger.info(f"Scheduler initialized: {total_steps} total steps, {self.scheduler_warmup_steps} warmup.")
 
         history = {'train_loss': [], 'train_acc': [], 'val_loss': [], 'val_acc': []}
@@ -318,6 +275,14 @@ class ATAERoBERTaSentimentClassifier:
                 attention_mask = batch['attention_mask'].to(self.device)
                 labels = batch['label'].to(self.device)
 
+                # --- Debugging: Check labels before loss ---
+                if labels.min() < 0 or labels.max() >= self.num_classes:
+                     logger.error(f"Epoch {epoch+1}, Batch {batch_idx}: Invalid label detected!")
+                     logger.error(f"Labels in batch: {labels.tolist()}")
+                     logger.error(f"Min label: {labels.min()}, Max label: {labels.max()}, Num classes: {self.num_classes}")
+                     raise ValueError(f"Invalid label found in batch {batch_idx} of epoch {epoch+1}")
+                # --- End Debugging ---
+
                 outputs = self.model(input_ids, attention_mask)
                 loss = self.criterion(outputs, labels)
                 loss = loss / self.gradient_accumulation_steps
@@ -331,15 +296,13 @@ class ATAERoBERTaSentimentClassifier:
                 if (batch_idx + 1) % self.gradient_accumulation_steps == 0 or (batch_idx + 1) == len(train_loader):
                     torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.max_grad_norm)
                     self.optimizer.step()
-                    if self.scheduler is not None:
-                        self.scheduler.step()
+                    if self.scheduler is not None: self.scheduler.step()
                     self.optimizer.zero_grad()
 
             avg_train_loss = total_loss / len(train_loader) if len(train_loader) > 0 else 0.0
             train_accuracy = correct_predictions / total_samples if total_samples > 0 else 0.0
             history['train_loss'].append(avg_train_loss)
             history['train_acc'].append(train_accuracy)
-
             log_message = f"Epoch {epoch+1}/{self.num_epochs} - Train Loss: {avg_train_loss:.4f}, Train Acc: {train_accuracy:.4f}"
 
             if val_loader:
@@ -367,10 +330,16 @@ class ATAERoBERTaSentimentClassifier:
                 attention_mask = batch['attention_mask'].to(self.device)
                 labels = batch['label'].to(self.device)
 
+                # --- Debugging: Check labels before eval loss ---
+                if labels.min() < 0 or labels.max() >= self.num_classes:
+                     logger.error(f"Evaluation: Invalid label detected!")
+                     logger.error(f"Labels in batch: {labels.tolist()}")
+                     logger.error(f"Min label: {labels.min()}, Max label: {labels.max()}, Num classes: {self.num_classes}")
+                     continue # Skip batch
+
                 outputs = self.model(input_ids, attention_mask)
                 loss = self.criterion(outputs, labels)
                 total_loss += loss.item()
-
                 _, predicted = torch.max(outputs, 1)
                 correct_predictions += (predicted == labels).sum().item()
                 total_samples += labels.size(0)
@@ -383,11 +352,13 @@ class ATAERoBERTaSentimentClassifier:
     def predict(self, texts: List[str]) -> List[Dict[str, Any]]:
         """Make predictions on new texts."""
         self.model.eval()
-        dataset = SentimentDataset(texts, [0] * len(texts), self.tokenizer, self.max_length)
+        dataset = SentimentDataset(texts, [-1] * len(texts), self.tokenizer, self.max_length) # Placeholder label
         num_workers = min(4, os.cpu_count()) if os.cpu_count() else 0
         loader = DataLoader(dataset, batch_size=self.batch_size, num_workers=num_workers)
 
         predictions = []
+        label_map_inv = {0: 'Negative', 1: 'Neutral', 2: 'Positive'}
+
         with torch.no_grad():
             for batch in loader:
                 input_ids = batch['input_ids'].to(self.device)
@@ -399,10 +370,11 @@ class ATAERoBERTaSentimentClassifier:
                 confs = probabilities[torch.arange(len(preds)), preds]
 
                 for i in range(len(preds)):
-                    pred_class = preds[i].item()
+                    pred_class_idx = preds[i].item()
                     confidence = confs[i].item()
+                    pred_label_str = label_map_inv.get(pred_class_idx, 'Unknown')
                     predictions.append({
-                        'label': 'Positive' if pred_class == 1 else 'Negative',
+                        'label': pred_label_str,
                         'confidence': confidence
                     })
         return predictions
@@ -412,22 +384,12 @@ class ATAERoBERTaSentimentClassifier:
         """Save the model and optimizer state."""
         os.makedirs(os.path.dirname(path), exist_ok=True)
         try:
-            save_dict = {
-                'model_state_dict': self.model.state_dict(),
-                'optimizer_state_dict': self.optimizer.state_dict(),
-            }
-            if self.scheduler:
-                 save_dict['scheduler_state_dict'] = self.scheduler.state_dict()
-
-            # Save architecture config needed for reloading
+            save_dict = {'model_state_dict': self.model.state_dict(), 'optimizer_state_dict': self.optimizer.state_dict()}
+            if self.scheduler: save_dict['scheduler_state_dict'] = self.scheduler.state_dict()
             save_dict['model_config'] = {
-                'roberta_model': self.roberta_model,
-                'lstm_hidden_dim': self.lstm_hidden_dim,
-                'lstm_layers': self.lstm_layers,
-                'dropout': self.dropout,
-                'freeze_roberta': self.freeze_roberta, # Save freeze state
-                'bidirectional_lstm': self.bidirectional_lstm,
-                'use_layer_norm': self.use_layer_norm,
+                'roberta_model': self.roberta_model, 'lstm_hidden_dim': self.lstm_hidden_dim, 'lstm_layers': self.lstm_layers,
+                'dropout': self.dropout, 'freeze_roberta': self.freeze_roberta, 'bidirectional_lstm': self.bidirectional_lstm,
+                'use_layer_norm': self.use_layer_norm, 'num_classes': self.num_classes # Save num_classes
             }
             torch.save(save_dict, path)
             logger.info(f"ATAE-RoBERTa model saved successfully to {path}")
@@ -442,67 +404,49 @@ class ATAERoBERTaSentimentClassifier:
             raise FileNotFoundError(f"No ATAE-RoBERTa model checkpoint found at {path}")
         try:
             checkpoint = torch.load(path, map_location=self.device)
-
-            # --- Re-instantiate model with saved architecture ---
             saved_config = checkpoint.get('model_config')
             if not saved_config:
                  logger.warning(f"Checkpoint {path} missing 'model_config'. Attempting load with current defaults.")
                  saved_freeze_roberta = self.freeze_roberta
+                 self.num_classes = getattr(self, 'num_classes', 3) # Default if missing
             else:
-                 # Update current instance parameters
                  self.roberta_model = saved_config.get('roberta_model', self.roberta_model)
                  self.lstm_hidden_dim = saved_config.get('lstm_hidden_dim', self.lstm_hidden_dim)
                  self.lstm_layers = saved_config.get('lstm_layers', self.lstm_layers)
                  self.dropout = saved_config.get('dropout', self.dropout)
-                 self.freeze_roberta = saved_config.get('freeze_roberta', self.freeze_roberta) # Use saved freeze state
+                 self.freeze_roberta = saved_config.get('freeze_roberta', self.freeze_roberta)
                  self.bidirectional_lstm = saved_config.get('bidirectional_lstm', self.bidirectional_lstm)
                  self.use_layer_norm = saved_config.get('use_layer_norm', self.use_layer_norm)
-                 saved_freeze_roberta = self.freeze_roberta # Store for optimizer recreation
+                 self.num_classes = saved_config.get('num_classes', 3) # Load num_classes, default 3
+                 saved_freeze_roberta = self.freeze_roberta
                  logger.info("Model parameters updated from saved config.")
 
-                 # Re-create the model architecture
+                 # Re-create the model architecture with loaded config (including num_classes)
                  self.model = ATAERoBERTa(
-                     roberta_model=self.roberta_model,
-                     lstm_hidden_dim=self.lstm_hidden_dim,
-                     lstm_layers=self.lstm_layers,
-                     dropout=self.dropout,
-                     freeze_roberta=self.freeze_roberta, # Use loaded freeze state
-                     bidirectional_lstm=self.bidirectional_lstm,
-                     use_layer_norm=self.use_layer_norm
+                     roberta_model=self.roberta_model, lstm_hidden_dim=self.lstm_hidden_dim, lstm_layers=self.lstm_layers,
+                     dropout=self.dropout, freeze_roberta=self.freeze_roberta, bidirectional_lstm=self.bidirectional_lstm,
+                     use_layer_norm=self.use_layer_norm, num_classes=self.num_classes # Pass loaded num_classes
                  ).to(self.device)
-                 logger.info("Model architecture re-created from saved config.")
+                 logger.info(f"Model architecture re-created from saved config (num_classes={self.num_classes}).")
 
-            # Load model state dict
             self.model.load_state_dict(checkpoint['model_state_dict'])
 
-            # --- Re-create optimizer AFTER model is potentially recreated ---
+            # Re-create optimizer AFTER model is potentially recreated
             if not saved_freeze_roberta:
                 roberta_params = [p for n, p in self.model.named_parameters() if "roberta" in n and p.requires_grad]
                 other_params = [p for n, p in self.model.named_parameters() if "roberta" not in n and p.requires_grad]
-                optimizer_grouped_parameters = [
-                    {'params': roberta_params, 'lr': self.learning_rate * 0.1},
-                    {'params': other_params, 'lr': self.learning_rate}
-                ]
+                optimizer_grouped_parameters = [{'params': roberta_params, 'lr': self.learning_rate * 0.1}, {'params': other_params, 'lr': self.learning_rate}]
                 self.optimizer = AdamW(optimizer_grouped_parameters, weight_decay=self.weight_decay)
                 logger.info("Optimizer re-created with differential learning rates (based on loaded state).")
             else:
-                self.optimizer = AdamW(
-                    [p for p in self.model.parameters() if p.requires_grad],
-                    lr=self.learning_rate, weight_decay=self.weight_decay
-                )
+                self.optimizer = AdamW([p for p in self.model.parameters() if p.requires_grad], lr=self.learning_rate, weight_decay=self.weight_decay)
                 logger.info("Optimizer re-created with single learning rate (based on loaded state).")
 
-            # Load optimizer state dict
             self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
 
-            # Load scheduler state if available
             if self.scheduler and 'scheduler_state_dict' in checkpoint:
                  total_steps_placeholder = 1000
-                 self.scheduler = get_linear_schedule_with_warmup(
-                     self.optimizer,
-                     num_warmup_steps=self.scheduler_warmup_steps,
-                     num_training_steps=total_steps_placeholder
-                 )
+                 self.scheduler = get_linear_schedule_with_warmup(self.optimizer, num_warmup_steps=self.scheduler_warmup_steps, num_training_steps=total_steps_placeholder)
                  self.scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
                  logger.info("Scheduler state loaded.")
 

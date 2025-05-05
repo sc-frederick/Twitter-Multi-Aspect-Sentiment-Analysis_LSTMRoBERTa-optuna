@@ -1,3 +1,4 @@
+# src/utils/lstm_roberta_classifier.py
 """
 Hybrid LSTM-RoBERTa classifier for sentiment analysis.
 """
@@ -27,7 +28,7 @@ class SentimentDataset(Dataset):
 
         Args:
             texts: List of input texts
-            labels: List of sentiment labels (0 for negative, 1 for positive)
+            labels: List of sentiment labels (0 for negative, 1 for neutral, 2 for positive) # Updated comment
             tokenizer: RoBERTa tokenizer
             max_length: Maximum sequence length
         """
@@ -51,6 +52,11 @@ class SentimentDataset(Dataset):
             truncation=True,
             return_tensors='pt'
         )
+
+        # --- Add a check for label validity ---
+        if not (0 <= label <= 2): # Check if label is 0, 1, or 2
+             logger.warning(f"Invalid label found at index {idx}: {label}. Replacing with 1 (Neutral). Text: {text[:100]}...")
+             label = 1 # Replace invalid label, e.g., with neutral
 
         return {
             'input_ids': encoding['input_ids'].squeeze(),
@@ -137,7 +143,8 @@ class LSTMRoBERTaClassifier(nn.Module):
         num_attention_heads: int = 4,
         use_layer_norm: bool = True,
         use_residual: bool = True,
-        use_pooler_output: bool = False
+        use_pooler_output: bool = False,
+        num_classes: int = 3 # Added parameter for number of classes
     ):
         """
         Initialize the model.
@@ -153,8 +160,10 @@ class LSTMRoBERTaClassifier(nn.Module):
             use_layer_norm: Whether to use layer normalization
             use_residual: Whether to use residual connections
             use_pooler_output: Whether to use RoBERTa pooler output alongside sequence outputs
+            num_classes: Number of output classes (should be 3 for neg/neu/pos)
         """
         super().__init__()
+        self.num_classes = num_classes # Store num_classes
 
         # Load RoBERTa model
         self.roberta = AutoModel.from_pretrained(roberta_model)
@@ -204,16 +213,18 @@ class LSTMRoBERTaClassifier(nn.Module):
         additional_dim = self.roberta.config.hidden_size if use_pooler_output else 0
 
         # Classification layers
+        classifier_input_dim = lstm_output_dim + additional_dim
         self.classifier = nn.Sequential(
-            nn.Linear(lstm_output_dim + additional_dim, (lstm_output_dim + additional_dim) // 2),
-            nn.LayerNorm((lstm_output_dim + additional_dim) // 2) if use_layer_norm else nn.Identity(),
+            nn.Linear(classifier_input_dim, classifier_input_dim // 2),
+            nn.LayerNorm(classifier_input_dim // 2) if use_layer_norm else nn.Identity(),
             nn.ReLU(),
             nn.Dropout(dropout),
-            nn.Linear((lstm_output_dim + additional_dim) // 2, (lstm_output_dim + additional_dim) // 4),
-            nn.LayerNorm((lstm_output_dim + additional_dim) // 4) if use_layer_norm else nn.Identity(),
+            nn.Linear(classifier_input_dim // 2, classifier_input_dim // 4),
+            nn.LayerNorm(classifier_input_dim // 4) if use_layer_norm else nn.Identity(),
             nn.ReLU(),
             nn.Dropout(dropout),
-            nn.Linear((lstm_output_dim + additional_dim) // 4, 2)  # 2 classes: negative and positive
+            # --- Ensure final layer outputs num_classes ---
+            nn.Linear(classifier_input_dim // 4, self.num_classes)
         )
 
     def forward(self, input_ids: torch.Tensor, attention_mask: torch.Tensor) -> torch.Tensor:
@@ -275,7 +286,7 @@ class LSTMRoBERTaClassifier(nn.Module):
             pooled = torch.cat([pooled, pooler_output], dim=1)
 
         # Classify
-        logits = self.classifier(pooled)  # [batch_size, 2]
+        logits = self.classifier(pooled)  # [batch_size, num_classes]
 
         return logits
 
@@ -302,7 +313,8 @@ class HybridSentimentClassifier:
         use_scheduler: bool = True,
         scheduler_warmup_steps: int = 500,
         gradient_accumulation_steps: int = 2,
-        max_grad_norm: float = 1.0
+        max_grad_norm: float = 1.0,
+        num_classes: int = 3 # Added num_classes
     ):
         """
         Initialize the classifier.
@@ -327,11 +339,12 @@ class HybridSentimentClassifier:
         self.scheduler_warmup_steps = scheduler_warmup_steps
         self.gradient_accumulation_steps = gradient_accumulation_steps
         self.max_grad_norm = max_grad_norm
+        self.num_classes = num_classes # Store num_classes
 
         # Initialize tokenizer
         self.tokenizer = AutoTokenizer.from_pretrained(roberta_model)
 
-        # Initialize model - pass freeze_roberta setting
+        # Initialize model - pass freeze_roberta setting and num_classes
         self.model = LSTMRoBERTaClassifier(
             roberta_model=roberta_model,
             hidden_dim=hidden_dim,
@@ -341,57 +354,37 @@ class HybridSentimentClassifier:
             num_attention_heads=num_attention_heads,
             use_layer_norm=use_layer_norm,
             use_residual=use_residual,
-            use_pooler_output=use_pooler_output
+            use_pooler_output=use_pooler_output,
+            num_classes=self.num_classes # Pass num_classes here
         ).to(self.device)
 
         # --- MODIFIED OPTIMIZER INITIALIZATION ---
         if not self.freeze_roberta:
-            # Separate parameters for differential learning rates
             roberta_params = []
             other_params = []
             for n, p in self.model.named_parameters():
-                if p.requires_grad: # Only consider parameters that require gradients
-                    if "roberta" in n:
-                        roberta_params.append(p)
-                    else:
-                        other_params.append(p)
-
+                if p.requires_grad:
+                    if "roberta" in n: roberta_params.append(p)
+                    else: other_params.append(p)
             if not roberta_params:
-                 logger.warning("Differential LR enabled, but no RoBERTa parameters found requiring gradients. Check model structure and freeze_roberta flag.")
-                 # Fallback to optimizing all trainable params with base LR
-                 self.optimizer = AdamW(
-                     [p for p in self.model.parameters() if p.requires_grad],
-                     lr=self.learning_rate,
-                     weight_decay=self.weight_decay
-                 )
+                 logger.warning("Differential LR enabled, but no RoBERTa parameters found requiring gradients.")
+                 self.optimizer = AdamW([p for p in self.model.parameters() if p.requires_grad], lr=self.learning_rate, weight_decay=self.weight_decay)
                  logger.info("Optimizer configured with single learning rate (RoBERTa params not trainable).")
             else:
                 optimizer_grouped_parameters = [
-                    {'params': roberta_params, 'lr': self.learning_rate * 0.1},  # Smaller LR for RoBERTa base
-                    {'params': other_params, 'lr': self.learning_rate}          # Base LR for the head
+                    {'params': roberta_params, 'lr': self.learning_rate * 0.1},
+                    {'params': other_params, 'lr': self.learning_rate}
                 ]
                 self.optimizer = AdamW(optimizer_grouped_parameters, weight_decay=self.weight_decay)
                 logger.info(f"Optimizer configured with differential learning rates: RoBERTa LR={self.learning_rate * 0.1}, Head LR={self.learning_rate}")
-
         else:
-            # Standard optimizer if RoBERTa is frozen
-            self.optimizer = AdamW(
-                [p for p in self.model.parameters() if p.requires_grad],
-                lr=self.learning_rate,
-                weight_decay=self.weight_decay
-            )
+            self.optimizer = AdamW([p for p in self.model.parameters() if p.requires_grad], lr=self.learning_rate, weight_decay=self.weight_decay)
             logger.info(f"Optimizer configured with single learning rate: {self.learning_rate} (RoBERTa frozen).")
         # --- END MODIFIED OPTIMIZER INITIALIZATION ---
 
-        # Initialize scheduler (will be updated in train)
         self.scheduler = None
         if use_scheduler:
-            # Placeholder total_steps, will be updated in train()
-            self.scheduler = get_linear_schedule_with_warmup(
-                self.optimizer,
-                num_warmup_steps=scheduler_warmup_steps,
-                num_training_steps=1000000
-            )
+            self.scheduler = get_linear_schedule_with_warmup(self.optimizer, num_warmup_steps=scheduler_warmup_steps, num_training_steps=1000000)
 
         # Initialize loss function with label smoothing
         self.criterion = nn.CrossEntropyLoss(label_smoothing=0.1)
@@ -413,9 +406,7 @@ class HybridSentimentClassifier:
         Returns:
             Dictionary containing training history
         """
-        # Create datasets
         train_dataset = SentimentDataset(train_texts, train_labels, self.tokenizer, self.max_length)
-        # Determine appropriate num_workers
         num_workers = min(4, os.cpu_count()) if os.cpu_count() else 0
         train_loader = DataLoader(train_dataset, batch_size=self.batch_size, shuffle=True, num_workers=num_workers)
 
@@ -424,33 +415,19 @@ class HybridSentimentClassifier:
             val_dataset = SentimentDataset(val_texts, val_labels, self.tokenizer, self.max_length)
             val_loader = DataLoader(val_dataset, batch_size=self.batch_size, num_workers=num_workers)
 
-        # Update scheduler total steps if enabled
         if self.use_scheduler:
             total_steps = len(train_loader) * self.num_epochs // self.gradient_accumulation_steps
-            self.scheduler = get_linear_schedule_with_warmup(
-                self.optimizer,
-                num_warmup_steps=self.scheduler_warmup_steps,
-                num_training_steps=total_steps
-            )
+            self.scheduler = get_linear_schedule_with_warmup(self.optimizer, num_warmup_steps=self.scheduler_warmup_steps, num_training_steps=total_steps)
             logger.info(f"Scheduler updated: {total_steps} total steps, {self.scheduler_warmup_steps} warmup steps.")
 
-        # Training history
-        history = {
-            'train_loss': [],
-            'train_acc': [],
-            'val_loss': [],
-            'val_acc': []
-        }
+        history = {'train_loss': [], 'train_acc': [], 'val_loss': [], 'val_acc': []}
 
-        # Training loop
         logger.info(f"Starting training for {self.num_epochs} epochs...")
         for epoch in range(self.num_epochs):
             self.model.train()
             total_loss = 0
             correct = 0
             total = 0
-
-            # For gradient accumulation
             self.optimizer.zero_grad()
 
             for batch_idx, batch in enumerate(train_loader):
@@ -458,55 +435,38 @@ class HybridSentimentClassifier:
                 attention_mask = batch['attention_mask'].to(self.device)
                 labels = batch['label'].to(self.device)
 
-                # Forward pass
+                # --- Debugging: Check labels before loss ---
+                if labels.min() < 0 or labels.max() >= self.num_classes:
+                     logger.error(f"Epoch {epoch+1}, Batch {batch_idx}: Invalid label detected!")
+                     logger.error(f"Labels in batch: {labels.tolist()}")
+                     logger.error(f"Min label: {labels.min()}, Max label: {labels.max()}, Num classes: {self.num_classes}")
+                     # Optionally skip this batch or raise an error
+                     # continue
+                     raise ValueError(f"Invalid label found in batch {batch_idx} of epoch {epoch+1}")
+                # --- End Debugging ---
+
                 outputs = self.model(input_ids, attention_mask)
                 loss = self.criterion(outputs, labels)
-
-                # Scale loss for gradient accumulation
                 loss = loss / self.gradient_accumulation_steps
-
-                # Backward pass
                 loss.backward()
 
-                # Update total loss and accuracy metrics
-                # Unscale loss for logging
                 total_loss += loss.item() * self.gradient_accumulation_steps
-
-                # Calculate accuracy
                 _, predicted = torch.max(outputs, 1)
                 correct += (predicted == labels).sum().item()
                 total += labels.size(0)
 
-                # Gradient accumulation update step
                 if (batch_idx + 1) % self.gradient_accumulation_steps == 0 or (batch_idx + 1) == len(train_loader):
-                    # Gradient clipping
-                    torch.nn.utils.clip_grad_norm_(
-                        self.model.parameters(),
-                        self.max_grad_norm
-                    )
-
-                    # Optimizer step
+                    torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.max_grad_norm)
                     self.optimizer.step()
-
-                    # Scheduler step if enabled
-                    if self.scheduler is not None:
-                        self.scheduler.step()
-
-                    # Zero gradients for the next accumulation cycle
+                    if self.scheduler is not None: self.scheduler.step()
                     self.optimizer.zero_grad()
 
-
-            # Calculate average loss and accuracy for the epoch
-            avg_loss = total_loss / len(train_loader)
+            avg_loss = total_loss / len(train_loader) if len(train_loader) > 0 else 0.0
             accuracy = correct / total if total > 0 else 0.0
-
-            # Log training metrics
             history['train_loss'].append(avg_loss)
             history['train_acc'].append(accuracy)
-
             log_message = f"Epoch {epoch+1}/{self.num_epochs} - Train Loss: {avg_loss:.4f}, Train Acc: {accuracy:.4f}"
 
-            # Evaluate on validation set if provided
             if val_loader:
                 val_loss, val_acc = self.evaluate(val_loader)
                 history['val_loss'].append(val_loss)
@@ -539,11 +499,17 @@ class HybridSentimentClassifier:
                 attention_mask = batch['attention_mask'].to(self.device)
                 labels = batch['label'].to(self.device)
 
+                # --- Debugging: Check labels before eval loss ---
+                if labels.min() < 0 or labels.max() >= self.num_classes:
+                     logger.error(f"Evaluation: Invalid label detected!")
+                     logger.error(f"Labels in batch: {labels.tolist()}")
+                     logger.error(f"Min label: {labels.min()}, Max label: {labels.max()}, Num classes: {self.num_classes}")
+                     # Decide how to handle: skip batch, error out, etc.
+                     continue # Skip batch if invalid label found during eval
+
                 outputs = self.model(input_ids, attention_mask)
                 loss = self.criterion(outputs, labels)
-
                 total_loss += loss.item()
-
                 _, predicted = torch.max(outputs, 1)
                 correct += (predicted == labels).sum().item()
                 total += labels.size(0)
@@ -563,29 +529,32 @@ class HybridSentimentClassifier:
             List of dictionaries containing predictions and confidence scores
         """
         self.model.eval()
-        # Use the same SentimentDataset structure, labels are dummy
-        dataset = SentimentDataset(texts, [0] * len(texts), self.tokenizer, self.max_length)
+        dataset = SentimentDataset(texts, [-1] * len(texts), self.tokenizer, self.max_length) # Use placeholder label -1
         num_workers = min(4, os.cpu_count()) if os.cpu_count() else 0
         loader = DataLoader(dataset, batch_size=self.batch_size, num_workers=num_workers)
 
         predictions = []
+        # Define the inverse map for prediction output
+        label_map_inv = {0: 'Negative', 1: 'Neutral', 2: 'Positive'}
 
         with torch.no_grad():
             for batch in loader:
                 input_ids = batch['input_ids'].to(self.device)
                 attention_mask = batch['attention_mask'].to(self.device)
+                # Ignore labels from the loader during prediction
 
                 outputs = self.model(input_ids, attention_mask)
                 probabilities = torch.softmax(outputs, dim=1)
-
                 preds = torch.argmax(probabilities, dim=1)
-                confs = probabilities[torch.arange(len(preds)), preds] # Get confidence of predicted class
+                confs = probabilities[torch.arange(len(preds)), preds]
 
                 for i in range(len(preds)):
-                    pred_class = preds[i].item()
+                    pred_class_idx = preds[i].item()
                     confidence = confs[i].item()
+                    # Map index back to string label
+                    pred_label_str = label_map_inv.get(pred_class_idx, 'Unknown') # Handle potential unexpected index
                     predictions.append({
-                        'label': 'Positive' if pred_class == 1 else 'Negative',
+                        'label': pred_label_str,
                         'confidence': confidence
                     })
         return predictions
@@ -596,22 +565,21 @@ class HybridSentimentClassifier:
         save_dict = {
             'model_state_dict': self.model.state_dict(),
             'optimizer_state_dict': self.optimizer.state_dict(),
-            # Save config needed to reconstruct the model architecture
             'model_config': {
                 'roberta_model': self.roberta_model,
                 'hidden_dim': self.hidden_dim,
                 'num_layers': self.num_layers,
                 'dropout': self.dropout,
-                'freeze_roberta': self.freeze_roberta, # Save the freeze state
+                'freeze_roberta': self.freeze_roberta,
                 'num_attention_heads': self.num_attention_heads,
                 'use_layer_norm': self.use_layer_norm,
                 'use_residual': self.use_residual,
                 'use_pooler_output': self.use_pooler_output,
+                'num_classes': self.num_classes # Save num_classes
             }
         }
         if self.scheduler:
              save_dict['scheduler_state_dict'] = self.scheduler.state_dict()
-
         try:
             torch.save(save_dict, path)
             logger.info(f"Model saved successfully to {path}")
@@ -624,80 +592,56 @@ class HybridSentimentClassifier:
         if not os.path.exists(path):
             logger.error(f"Model file not found at {path}")
             raise FileNotFoundError(f"No model checkpoint found at {path}")
-
         try:
             checkpoint = torch.load(path, map_location=self.device)
-
-            # --- Re-instantiate model with saved architecture ---
             saved_config = checkpoint.get('model_config')
             if not saved_config:
                  logger.warning(f"Checkpoint {path} missing 'model_config'. Attempting load with current defaults.")
-                 # If config is missing, we cannot reliably know the freeze_roberta state
-                 # for the saved model, which affects optimizer loading.
-                 # It's safer to raise an error or proceed with caution.
-                 # For now, we proceed with current defaults but log a strong warning.
-                 saved_freeze_roberta = self.freeze_roberta # Assume current setting
+                 saved_freeze_roberta = self.freeze_roberta
+                 # --- Default num_classes if not found in config ---
+                 self.num_classes = getattr(self, 'num_classes', 3)
             else:
-                 # Update current instance parameters from saved config
                  self.roberta_model = saved_config.get('roberta_model', self.roberta_model)
                  self.hidden_dim = saved_config.get('hidden_dim', self.hidden_dim)
                  self.num_layers = saved_config.get('num_layers', self.num_layers)
                  self.dropout = saved_config.get('dropout', self.dropout)
-                 self.freeze_roberta = saved_config.get('freeze_roberta', self.freeze_roberta) # Use saved freeze state
+                 self.freeze_roberta = saved_config.get('freeze_roberta', self.freeze_roberta)
                  self.num_attention_heads = saved_config.get('num_attention_heads', self.num_attention_heads)
                  self.use_layer_norm = saved_config.get('use_layer_norm', self.use_layer_norm)
                  self.use_residual = saved_config.get('use_residual', self.use_residual)
                  self.use_pooler_output = saved_config.get('use_pooler_output', self.use_pooler_output)
-                 saved_freeze_roberta = self.freeze_roberta # Store for optimizer recreation
+                 # --- Load num_classes from saved config ---
+                 self.num_classes = saved_config.get('num_classes', 3) # Default to 3 if missing
+                 saved_freeze_roberta = self.freeze_roberta
                  logger.info("Model parameters updated from saved config.")
 
-                 # Re-create the model architecture with loaded config
+                 # Re-create the model architecture with loaded config (including num_classes)
                  self.model = LSTMRoBERTaClassifier(
-                     roberta_model=self.roberta_model,
-                     hidden_dim=self.hidden_dim,
-                     num_layers=self.num_layers,
-                     dropout=self.dropout,
-                     freeze_roberta=self.freeze_roberta, # Use loaded freeze state here
-                     num_attention_heads=self.num_attention_heads,
-                     use_layer_norm=self.use_layer_norm,
-                     use_residual=self.use_residual,
-                     use_pooler_output=self.use_pooler_output
+                     roberta_model=self.roberta_model, hidden_dim=self.hidden_dim, num_layers=self.num_layers,
+                     dropout=self.dropout, freeze_roberta=self.freeze_roberta, num_attention_heads=self.num_attention_heads,
+                     use_layer_norm=self.use_layer_norm, use_residual=self.use_residual, use_pooler_output=self.use_pooler_output,
+                     num_classes=self.num_classes # Pass loaded num_classes
                  ).to(self.device)
-                 logger.info("Model architecture re-created from saved config.")
+                 logger.info(f"Model architecture re-created from saved config (num_classes={self.num_classes}).")
 
-            # Load model state dict
             self.model.load_state_dict(checkpoint['model_state_dict'])
 
-            # --- Re-create optimizer AFTER model is potentially recreated ---
-            # Use the freeze_roberta status *from the loaded checkpoint*
+            # Re-create optimizer AFTER model is potentially recreated
             if not saved_freeze_roberta:
                 roberta_params = [p for n, p in self.model.named_parameters() if "roberta" in n and p.requires_grad]
                 other_params = [p for n, p in self.model.named_parameters() if "roberta" not in n and p.requires_grad]
-                optimizer_grouped_parameters = [
-                    {'params': roberta_params, 'lr': self.learning_rate * 0.1},
-                    {'params': other_params, 'lr': self.learning_rate}
-                ]
+                optimizer_grouped_parameters = [{'params': roberta_params, 'lr': self.learning_rate * 0.1}, {'params': other_params, 'lr': self.learning_rate}]
                 self.optimizer = AdamW(optimizer_grouped_parameters, weight_decay=self.weight_decay)
                 logger.info("Optimizer re-created with differential learning rates (based on loaded state).")
             else:
-                self.optimizer = AdamW(
-                    [p for p in self.model.parameters() if p.requires_grad],
-                    lr=self.learning_rate, weight_decay=self.weight_decay
-                )
+                self.optimizer = AdamW([p for p in self.model.parameters() if p.requires_grad], lr=self.learning_rate, weight_decay=self.weight_decay)
                 logger.info("Optimizer re-created with single learning rate (based on loaded state).")
 
-            # Load optimizer state dict
             self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
 
-            # Load scheduler state if available
             if self.scheduler and 'scheduler_state_dict' in checkpoint:
-                 # Recreate scheduler with placeholder steps before loading state
-                 total_steps_placeholder = 1000 # This doesn't matter much after loading state
-                 self.scheduler = get_linear_schedule_with_warmup(
-                     self.optimizer,
-                     num_warmup_steps=self.scheduler_warmup_steps,
-                     num_training_steps=total_steps_placeholder
-                 )
+                 total_steps_placeholder = 1000
+                 self.scheduler = get_linear_schedule_with_warmup(self.optimizer, num_warmup_steps=self.scheduler_warmup_steps, num_training_steps=total_steps_placeholder)
                  self.scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
                  logger.info("Scheduler state loaded.")
 
