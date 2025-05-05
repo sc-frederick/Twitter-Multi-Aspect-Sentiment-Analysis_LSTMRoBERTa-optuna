@@ -39,7 +39,7 @@ The project includes an automated data processing pipeline that downloads the `
 1. **Clone the repository:**
 
 ```bash
-git clone [[https://github.com/sc-frederick/Twitter-Multi-Aspect-Sentiment-Analysis_LSTMRoBERTa-optuna.git](https://github.com/sc-frederick/Twitter-Multi-Aspect-Sentiment-Analysis_LSTMRoBERTa-optuna.git)] # Replace with your repo URL
+git clone https://github.com/sc-frederick/Twitter-Multi-Aspect-Sentiment-Analysis_LSTMRoBERTa-optuna.git # Replace with your repo URL
 cd your-repo-name
 ```
 2. **Create a virtual environment (Recommended):**
