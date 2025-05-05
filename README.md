@@ -40,7 +40,7 @@ The project includes an automated data processing pipeline that downloads the `
 
 ```bash
 git clone https://github.com/sc-frederick/Twitter-Multi-Aspect-Sentiment-Analysis_LSTMRoBERTa-optuna.git # Replace with your repo URL
-cd your-repo-name
+cd Twitter-Multi-Aspect-Sentiment-Analysis_LSTMRoBERTa-optuna
 ```
 2. **Create a virtual environment (Recommended):**
 
