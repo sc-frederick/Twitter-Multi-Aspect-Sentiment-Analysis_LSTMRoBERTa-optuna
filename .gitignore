@@ -40,7 +40,6 @@ sentiment_analysis_env/
 kaggle.json
 
 # Data files
-*.csv
 *.json
 *.pkl
 *.h5
